@@ -14,6 +14,7 @@ before_install:
 - echo 'require-sigs = false' | sudo tee -a /etc/nix/nix.conf > /dev/null
 branches:
   only:
+  - dpdgraph
   - master
 notifications:
   email:
