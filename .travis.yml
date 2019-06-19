@@ -15,6 +15,7 @@ before_install:
 branches:
   only:
   - master
+  - mathcomp-1.9
 notifications:
   email:
   - false
