@@ -166,6 +166,7 @@ let pp_align fmt = function
   | E.NoAlign -> ()
 
 let rec pp_gi pp_info pp_ty pp_var fmt i =
+  F.fprintf fmt "(* %a *)@ " pp_iloc i.i_loc; 
   F.fprintf fmt "%a" pp_info i.i_info;
   match i.i_desc with
   | Cassgn(x , tg, ty, e) ->

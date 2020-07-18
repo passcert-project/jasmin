@@ -3,9 +3,15 @@ open Prog
 let xs = V.mk "xs" Reg tbool L._dummy
 let mem = V.mk "memory" Reg tbool L._dummy
 
+type model = 
+  | V1 
+  | V4
+
 let rec sct_e ~spec ~needed s e =
   match e with
-  | Pconst _ | Pbool _ | Parr_init _ | Pglobal _ -> s
+  | Pconst _ | Pbool _ | Parr_init _ -> s
+  | Pglobal _ -> (* will be translated into a load *)
+    if spec && needed then Sv.add xs s else s
 
   | Pvar x -> 
     let x = L.unloc x in
@@ -175,10 +181,8 @@ let check_fun f =
 
   Format.eprintf "For function %s@." f.f_name.fn_name;
  
-
   Format.eprintf "%a@.@."
     (Printer.pp_istmt ~debug:false pp_X) _body;
-
 
   if Sv.mem mem iC || Sv.mem mem iS then
     Format.eprintf "ERROR: the function %s is not constant time (memory)@."
