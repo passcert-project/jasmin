@@ -319,10 +319,11 @@ let main () =
       Conv.string0_of_string x in
 
     let pp_cprog s cp =
-      if s = Compiler.LowerInstruction then
+      if s = Compiler.LowerInstruction && !Glob_options.sct <> None then
+        let model = oget !Glob_options.sct in
         let p = Conv.prog_of_cprog tbl cp in
         eprint_msg s (Printer.pp_prog ~debug:true) p;
-        List.iter (Sct_checker.check_fun) (List.rev (snd p))
+        List.iter (Sct_checker.check_fun model) (List.rev (snd p))
     else
       eprint s (fun fmt cp ->
           let p = Conv.prog_of_cprog tbl cp in
