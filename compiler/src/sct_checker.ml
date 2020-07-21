@@ -5,6 +5,7 @@ let mem = V.mk "memory" Reg tbool L._dummy
 type sct_model =
   | V1 
   | V4
+  | V4_weak
 
 module V1 = struct
 
@@ -365,6 +366,228 @@ module V4 = struct
         f.f_name.fn_name;
     Format.eprintf "@.@."
 
+end
+
+module V4_weak = struct
+
+  (* For each stack variable [x] we add a variable [#x] representing
+     all values that are stored in this variable.
+     For all other memory location we over approximate using a common 
+     variable xs *)
+
+  type env = var Hv.t 
+
+  let empty_env () = Hv.create 107 
+
+  let get_xs env x = 
+    try Hv.find env x
+    with Not_found ->
+      let name = "#"^x.v_name in
+      let xs = V.mk name x.v_kind x.v_ty x.v_dloc in
+      Hv.add env x xs;
+      xs
+
+  let rec sct_e env ~spec ~needed s e =
+    match e with
+    | Pconst _ | Pbool _ | Parr_init _ -> s
+    | Pglobal _ -> s (* since globals are never write and they address are disjoint every where no miss speculation is possible here *) 
+      
+    | Pvar x -> 
+      let x = L.unloc x in
+      let s = if needed then Sv.add x s else s in
+      if spec && needed && is_stack_var x then 
+        Sv.add (get_xs env x) s else s
+      
+    | Pget(_, x, e) -> 
+      let x = L.unloc x in
+      assert (is_stack_var x);
+      let s = if needed then Sv.add x s else s in
+      let s = if spec && needed then Sv.add (get_xs env xs) s else s in
+      sct_e env ~spec ~needed:true s e
+      
+    | Pload(_, x, e) ->
+      let x = L.unloc x in
+      assert (not(is_stack_var x));
+      let s = if needed then Sv.add mem s else s in
+      let s = if spec && needed then Sv.add xs s else s in
+      sct_e env ~spec ~needed:true (Sv.add x s) e 
+ 
+    | Papp1 (_, e) -> sct_e env ~spec ~needed s e
+    | Papp2 (_, e1, e2) -> sct_es env ~spec ~needed s [e1;e2]
+    | PappN (_, es) -> sct_es env ~spec ~needed s es 
+    | Pif(_,e1,e2,e3) -> sct_es env ~spec ~needed s [e1;e2;e3]
+
+  and sct_es env ~spec ~needed s es = 
+    List.fold_left (sct_e env ~spec ~needed) s es 
+
+  let sct_lv env ~spec sO lv = 
+    match lv with
+    | Lnone _ -> Sv.empty, Sv.empty, false
+    | Lvar x  -> 
+      let x = L.unloc x in
+      let needed = 
+        let xs = get_xs env x in
+        if is_stack_var x then
+          Sv.mem x sO || Sv.mem xs sO
+        else Sv.mem x sO in
+      Sv.empty, Sv.singleton x, needed 
+        
+    | Lmem(_,x,e) -> 
+      let x = L.unloc x in
+      assert (not (is_stack_var x));
+      let needed = Sv.mem mem sO || Sv.mem xs sO in
+      sct_e env ~spec ~needed:true (Sv.singleton x) e, Sv.empty, needed
+  
+    | Laset(_,x,e) ->
+      let x = L.unloc x in
+      assert (is_stack_var x);
+      let xs = get_xs env xs in
+      let needed = Sv.mem x sO || Sv.mem xs sO in
+      sct_e env ~spec ~needed:true Sv.empty e, Sv.empty, needed
+  
+  let sct_lvs env ~spec sO lvs =
+    let l = List.map (sct_lv env ~spec sO) lvs in
+    let needed = List.exists (fun (_,_,needed) -> needed) l in
+    let to_remove = 
+      List.fold_left 
+        (fun to_remove (_, s, _) -> Sv.union to_remove s) Sv.empty l in
+    let to_add = 
+      List.fold_left 
+        (fun to_add (s, _, _) -> Sv.union to_add s) Sv.empty l in
+    to_add, to_remove, needed
+  
+  
+  let pp_x msg s =
+    Format.eprintf  "%s = {@[%a@]}@." msg
+        (Printer.pp_list "@, " (Printer.pp_var ~debug:false)) (Sv.elements s) 
+  
+  let pp_X fmt (iS, iC) = 
+      Format.fprintf fmt "@[<h>S = { %a }        | C = { %a }@]@ "
+        (Printer.pp_list "@, " (Printer.pp_var ~debug:false)) (Sv.elements iS) 
+        (Printer.pp_list "@, " (Printer.pp_var ~debug:false)) (Sv.elements iC) 
+  
+  let rec sct_i env i (oS, oC) = 
+   (* Format.eprintf "@[<h>sct_i %a    %a@]@." 
+      (Printer.pp_stmt ~debug:false) [i]
+      pp_X (oS, oC); *)
+  
+    let x, i_desc = 
+      match i.i_desc with
+      | Cassgn(x,_,_,e) ->
+        let doit spec sO = 
+          let to_add, to_remove, needed = sct_lv env ~spec sO x in
+          let x = (Sv.union to_add (Sv.diff sO to_remove)) in
+          let xe = sct_e env ~spec ~needed  Sv.empty e in
+       (*   pp_x "x" x;
+          pp_x "xe" xe; *)
+          Sv.union x xe in
+  
+        (doit true oS, doit false oC), i.i_desc
+      
+      | Copn(_, _, Expr.Ox86 (X86_instr_decl.LFENCE), _) ->
+        let oC = Sv.union oS oC in
+        let oC = Hv.fold (fun _x xs oC -> Sv.remove xs oC) env oC in
+        (Sv.empty, Sv.remove xs oC), i.i_desc
+      
+      | Copn(xs, _, _, es) ->
+        let doit spec sO = 
+          let to_add, to_remove, needed = sct_lvs env ~spec sO xs in
+          let x = (Sv.union to_add (Sv.diff sO to_remove)) in
+          let xe = sct_es env ~spec ~needed  Sv.empty es in
+  (*        Format.eprintf "%s@." (if spec then "Spec" else "CT");
+          Format.eprintf "needed = %b@." needed;
+          pp_x "x" x;
+          pp_x "xe" xe; *)
+          Sv.union x xe in    
+        (doit true oS, doit false oC), i.i_desc
+      
+      | Cif (e,c1,c2) ->
+        let ((iS1, iC1), c1) = sct_c env c1 (oS, oC) in
+        let ((iS2, iC2), c2) = sct_c env c2 (oS, oC) in
+        let needed = true in
+        let iS = sct_e env ~spec:true ~needed (Sv.union iS1 iS2) e in
+        let iC = sct_e env ~spec:false ~needed (Sv.union iC1 iC2) e in
+        (iS, iC), Cif(e,c1,c2)
+   
+  
+                
+      | Cwhile(a,c1,e,c2) -> 
+        (* c1;while e {c2; c1} *)
+        let rec aux oS oC = 
+          let (iS1,iC1), c1 = sct_c env c1 (oS,oC) in
+          let (iS2,iC2), c2 = sct_c env c2 (iS1,iC1) in
+          let needed = true in
+          let iS = sct_e env ~spec:true ~needed iS2 e in
+          let iC = sct_e env ~spec:false ~needed iC2 e in
+          if Sv.subset iS oS && Sv.subset iC oC then
+            (iS1,iC1), (* (oS,Oc), *) c1, c2
+          else
+            aux (Sv.union iS oS) (Sv.union iC oC) in
+        let xI, c1, c2 = aux oS oC in
+        xI, Cwhile(a,c1,e,c2)
+  
+      | Cfor _ -> assert false
+  
+      | Ccall _ -> assert false in
+  
+    x, {i_desc; i_loc = i.i_loc; i_info = x }
+  
+  and sct_c env c o = 
+    match c with
+    | [] -> o, []
+    | i :: c ->
+      let xc,c = sct_c env c o in
+      let xi, i = sct_i env i xc in
+      xi, i::c
+  
+  
+  let rec map_info_i i = 
+    let i_desc = 
+      match i.i_desc with
+      | Cassgn(x,t,ty,e)   -> Cassgn(x,t,ty,e)
+      | Copn(xs,t,o,e)     -> Copn(xs,t,o,e) 
+      | Cif(e,c1,c2)       -> Cif(e, map_info_c c1, map_info_c c2)
+      | Cwhile (a,c1,e,c2) -> Cwhile(a, map_info_c c1, e, map_info_c c2)
+      | Cfor _             -> assert false
+      | Ccall _            -> assert false in
+    {i_desc; i_loc = i.i_loc; i_info = Sv.empty, Sv.empty }
+  
+  and map_info_c c = 
+    List.map map_info_i c
+  
+  let check_fun f = 
+    let body = map_info_c f.f_body in
+    let env = empty_env () in
+    let (iS, iC), _body = sct_c env body (Sv.singleton xs, Sv.empty) in
+    
+    let xS = 
+      Hv.fold (fun _x xs xS -> Sv.add xs xS) env (Sv.singleton xs) in
+    let to_keep = 
+      Sv.add mem (Sv.union xS (Sv.of_list f.f_args)) in
+    let iS, iC = 
+      Sv.inter to_keep iS, Sv.inter to_keep iC in
+  
+    Format.eprintf "For function %s@." f.f_name.fn_name;
+   
+    Format.eprintf "%a@.@."
+      (Printer.pp_istmt ~debug:false pp_X) _body;
+  
+    Format.eprintf "dependency: %a@.@." pp_X (iS, iC);
+
+    if Sv.mem mem iC || Sv.mem mem iS then
+      Format.eprintf "ERROR: the function %s is not constant time (memory)@."
+        f.f_name.fn_name;
+  
+    if Sv.mem xs iS then
+      Format.eprintf "WARNING: speculative leakages of %s depend of xs@."
+        f.f_name.fn_name;
+    let check_xs _x xs = 
+      if Sv.mem xs iS then
+        Format.eprintf "WARNING: speculative leakages of %s depend of %a@."
+          f.f_name.fn_name (Printer.pp_var ~debug:false) xs in
+    Hv.iter check_xs env; 
+    Format.eprintf "@.@."
+
 end 
 
 
@@ -372,6 +595,7 @@ let check_fun model f =
   match model with
   | V1 -> V1.check_fun f
   | V4 -> V4.check_fun f
+  | V4_weak -> V4_weak.check_fun f
 
   
 

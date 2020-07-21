@@ -61,6 +61,7 @@ let set_safetyparam s = safety_param := Some s
 
 let set_v1 () = sct := Some Sct_checker.V1
 let set_v4 () = sct := Some Sct_checker.V4
+let set_v4_weak () = sct := Some Sct_checker.V4_weak
 
 let print_strings = function
   | Compiler.Typing                      -> "typing"   , "typing"
@@ -104,6 +105,7 @@ let options = [
     "-CT" , Arg.Unit set_constTime      , ": generates model for constant time verification";
     "-v1", Arg.Unit set_v1              , ": check sct for v1";
     "-v4", Arg.Unit set_v4              , ": check sct for v4";
+    "-v4_weak", Arg.Unit set_v4_weak    , ": check sct for v4 weaker version";
     "-safety", Arg.Unit set_safety      , ": generates model for safety verification";
     "-checksafety", Arg.Unit set_checksafety, ": automatically check for safety";
     "-safetyparam", Arg.String set_safetyparam,
