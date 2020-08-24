@@ -300,13 +300,33 @@ type mvar =
   | MNumInv of L.t              (* Numerical Invariants *)
   | MmemRange of mem_loc        (* Memory location range *)
 
-let weak_update v = match v with
-  | Mvalue _
-  | MinValue _
-  | Mglobal _
+(* Must the variable [v] be handled as a weak variable, under
+   standard semantics (not is_spec) or speculative semantics (is_spec).
+   Under speculative semantics, all stores to non-register variables can be
+   re-ordered. Consequently, such variables must be weak variables. *)
+let weak_update is_spec v = 
+  let weak_update_kind = function
+    | Const -> assert false     (* should not happen *)
+    | Stack  -> is_spec
+    | Reg  
+    | Inline
+    | Global -> false in
+
+  match v with
+  | Mglobal _ -> false (* global variable are read-only. *)
   | Temp _
-  | MNumInv _
-  | MvarOffset _ -> false
+  | MNumInv _ -> 
+    (* we do not check termination under the speculative semantics *)
+    assert (not is_spec); 
+    false
+
+  | Mvalue at -> begin match at with
+      | Avar gv | Aarray gv | AarrayEl (gv,_,_) -> weak_update_kind gv.v_kind
+    end
+
+  | MinValue gv
+  | MvarOffset gv ->  weak_update_kind gv.v_kind 
+
   | MmemRange _ -> true
   | WTemp _ -> true
 
@@ -833,7 +853,7 @@ module Mtexpr : sig
   val extend_environment : t -> apr_env -> t
 
   val weak_cp : mvar -> int -> mvar
-  val weak_transf : int Mm.t -> mexpr -> int Mm.t * mexpr
+  val weak_transf : bool -> int Mm.t -> mexpr -> int Mm.t * mexpr
 
   (* This does not check equality of the underlying Apron environments. *)
   val equal_mexpr : t -> t -> bool
@@ -953,23 +973,23 @@ end = struct
 
 
   (* We rewrite the expression to perform soundly weak updates *)
-  let rec weak_transf map e =
+  let rec weak_transf is_spec map e =
     match e with
     | Mcst c -> (map, Mcst c)
     | Mvar mvar ->
-      if weak_update mvar then
+      if weak_update is_spec mvar then
         let i = Mm.find_default 0 mvar map in
         let map' = Mm.add mvar (i + 1) map in
         (map', Mvar (weak_cp mvar i))
       else (map, Mvar mvar)
 
     | Munop (op1, a, t, r) ->
-      let map',a' = weak_transf map a in
+      let map',a' = weak_transf is_spec map a in
       (map', Munop (op1, a', t, r))
 
     | Mbinop (op2, a, b, t, r) ->
-      let map',a' = weak_transf map a in
-      let map'',b' = weak_transf map' b in
+      let map',a' = weak_transf is_spec map a in
+      let map'',b' = weak_transf is_spec map' b in
       (map'', Mbinop (op2, a', b', t, r))
 
   let get_var_mexpr e =
@@ -1152,6 +1172,9 @@ end
 module type AbsNumType = sig
   type t
 
+  (* C.f. AbsBoolNoRel desciption *)
+  val init_is_spec : bool -> unit
+
   (* Make a top value defined on the given variables *)
   val make : mvar list -> t
 
@@ -1208,6 +1231,13 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
 
   type t = Manager.t Abstract1.t
   let man = Manager.man
+
+  let v_is_spec = ref None 
+  let init_is_spec b = match !v_is_spec with
+    | None -> v_is_spec := Some b
+    | Some _ -> assert false    (* Should not initialize this twice *)
+
+  let is_spec () = oget !v_is_spec
 
   let is_relational () = Ppl.manager_is_ppl man
 
@@ -1343,7 +1373,7 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
 
   let bound_texpr_man man a (e : Mtexpr.t) =
     (* We use a different variable for each occurrence of weak variables *)
-    let map,mexpr = Mtexpr.weak_transf Mm.empty e.mexpr in
+    let map,mexpr = Mtexpr.weak_transf (is_spec ()) Mm.empty e.mexpr in
     let a = add_weak_cp_man man a map in
 
     let env = prepare_env (Abstract1.env a) e.mexpr in
@@ -1385,11 +1415,11 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
   (* Relational assignment. *)
   let assign_expr_rel force a v e =
     (* We use a different variable for each occurrence of weak variables *)
-    let map,mexpr = Mtexpr.weak_transf Mm.empty Mtexpr.(e.mexpr) in
+    let map,mexpr = Mtexpr.weak_transf (is_spec ()) Mm.empty Mtexpr.(e.mexpr) in
 
     let a = add_weak_cp a map in
     (* We do the same for the variable receiving the assignment *)
-    let v_weak = weak_update v && not force in
+    let v_weak = weak_update (is_spec ()) v && not force in
     let a,v_cp = if v_weak then
         let v_cp = Temp ("weaklv_" ^ string_of_mvar v,0, ty_mvar v) in
         (expand a v [v_cp], v_cp)
@@ -1413,7 +1443,7 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
   (* Forced non relational assignment *)
   let assign_expr_norel force a v e =
     (* We do a copy of v if we do a weak assignment *)
-    let v_weak = weak_update v && not force in
+    let v_weak = weak_update (is_spec ()) v && not force in
     let a,v_cp = if v_weak then
         let v_cp = Temp ("weaklv_" ^ string_of_mvar v,0, ty_mvar v) in
         (expand a v [v_cp], v_cp)
@@ -1565,7 +1595,7 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
           let e = Mtcons.get_expr c in
 
           (* We use a different variable for each occurrence of weak variables *)
-          let map,mexpr = Mtexpr.weak_transf map e.mexpr in
+          let map,mexpr = Mtexpr.weak_transf (is_spec ()) map e.mexpr in
 
           (* We prepare the expression *)
           let env = prepare_env (Abstract1.env a) e.mexpr in
@@ -1665,12 +1695,13 @@ module type VDomWrap = sig
   (* Associate a domain (ppl or non-relational) to every variable.
      An array element must have the same domain that its blasted component. *)
   val vdom : mvar -> v_dom
+
+  (* C.f. AbsBoolNoRel desciption *)
+  val init_is_spec : bool -> unit
 end
 
-module DomNR : VDomWrap = struct
-  let vdom _ = Nrd 0
-end
 
+(*---------------------------------------------------------------*)
 (* Fix-point computation *)
 let rec fpt f eq x =
   let x' = f x in
@@ -1694,6 +1725,11 @@ module AbsNumProd (VDW : VDomWrap) (NonRel : AbsNumType) (PplDom : AbsNumType)
 
   type t = { nrd : NonRel.t Mdom.t;
              ppl : PplDom.t Mdom.t }
+
+  let is_spec = ref None 
+  let init_is_spec b = match !is_spec with
+    | None -> is_spec := Some b; NonRel.init_is_spec b; PplDom.init_is_spec b
+    | Some _ -> assert false    (* Should not initialize this twice *)
 
   let nrddoms = [Nrd 0]
   let ppldoms = [Ppl 0]
@@ -2305,6 +2341,14 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
   type t = { tree : A.t Ptree.t;
              cnstrs : cnstr_blk list }
 
+
+  (*---------------------------------------------------------------*)
+  let is_spec = ref None 
+  let init_is_spec b = match !is_spec with
+    | None -> is_spec := Some b; A.init_is_spec b
+    | Some _ -> assert false    (* Should not initialize this twice *)
+
+
   (*---------------------------------------------------------------*)
   (* hashconsing *)
   module MC = struct
@@ -2667,6 +2711,12 @@ let mtexpr_of_bigint env z =
 
 module PIMake (PW : ProgWrap) : VDomWrap = struct
 
+  let is_spec = ref None 
+  let init_is_spec b = match !is_spec with
+    | None -> is_spec := Some b
+    | Some _ -> assert false    (* Should not initialize this twice *)
+
+
   (* We compute the dependency heuristic graph *)
   let pa_res = Pa.pa_make PW.main PW.prog
 
@@ -2764,9 +2814,35 @@ end
 module MakeAbsNumProf (A : NumWrap) : AbsNumType with type t = A.Num.t = struct
   include A.Num
 
-  let record s = Prof.record (A.prefix^s)
-  let call s = Prof.call (A.prefix^s)
+  let is_spec = ref None 
 
+  (*----------------------------------------------------------------*)
+  (* Profiling for the new functions. 
+     We post-pone recording until the module has been initialized. *)
+  let to_rec = ref []
+  let record s = 
+    let f () =
+      if oget !is_spec 
+      then Prof.record ("Spc."^A.prefix^s) 
+      else Prof.record ("Std."^A.prefix^s) in
+    to_rec := f :: !to_rec
+
+  let record_doit () =
+    List.iter (fun f -> f ()) !to_rec
+
+  let call s = 
+    if oget !is_spec 
+      then Prof.call ("Spc."^A.prefix^s) 
+      else Prof.call ("Std."^A.prefix^s)   
+
+
+  (*----------------------------------------------------------------*)
+  let init_is_spec b = match !is_spec with
+    | None -> is_spec := Some b; A.Num.init_is_spec b; record_doit ()
+    | Some _ -> assert false    (* Should not initialize this twice *)
+
+
+  (*----------------------------------------------------------------*)
   let () = record "make"
   let make x =
     let t = Sys.time () in
@@ -2908,13 +2984,15 @@ module type DisjWrap = sig
 end
 
 module MakeAbsDisjProf (A : DisjWrap) : AbsDisjType = struct
-  include MakeAbsNumProf (struct
+  module AProf = MakeAbsNumProf (struct
       let prefix = A.prefix
       module Num = struct
         include A.Num
         let of_box _ = assert false
       end
     end)
+
+  include AProf
 
   let of_box = A.Num.of_box
   let new_cnstr_blck = A.Num.new_cnstr_blck
@@ -2924,11 +3002,33 @@ module MakeAbsDisjProf (A : DisjWrap) : AbsDisjType = struct
   let top_no_disj = A.Num.top_no_disj
   let remove_disj = A.Num.remove_disj
 
-  (*----------------------------------------------------------------*)
-  (* Profiling for the new functions. *)
-  let record s = Prof.record ("D."^s)
-  let call s = Prof.call ("D."^s)
+  let is_spec = ref None 
 
+  (*----------------------------------------------------------------*)
+  (* Profiling for the new functions. 
+     We post-pone recording until the module has been initialized. *)
+  let to_rec = ref []
+  let record s = 
+    let f () =
+      if oget !is_spec 
+      then Prof.record ("Spc.D."^s) 
+      else Prof.record ("Std.D."^s) in
+    to_rec := f :: !to_rec
+
+  let record_doit () =
+    List.iter (fun f -> f ()) !to_rec
+
+  let call s = 
+    if oget !is_spec 
+      then Prof.call ("Spc.D."^s) 
+      else Prof.call ("Std.D."^s) 
+
+  (*----------------------------------------------------------------*)
+  let init_is_spec b = match !is_spec with
+    | None -> is_spec := Some b; AProf.init_is_spec b; record_doit ();
+    | Some _ -> assert false    (* Should not initialize this twice *)
+
+  (*----------------------------------------------------------------*)
   let () = record "of_box"
   let of_box x y =
     let t = Sys.time () in
@@ -2989,10 +3089,14 @@ module type AbsNumT = sig
   module R : AbsDisjType
   module NR : AbsNumType
 
+  (* C.f. AbsBoolNoRel desciption *)
+  val init_is_spec : bool -> unit
+
   val downgrade : R.t -> NR.t
   (* The second argument is used as a shape *)
   val upgrade : NR.t -> R.t -> R.t
 end
+
 
 module AbsNumTMake (PW : ProgWrap) : AbsNumT = struct
   module VDW = PIMake (PW)
@@ -3012,6 +3116,15 @@ module AbsNumTMake (PW : ProgWrap) : AbsNumT = struct
       module Num = NRNum
       let prefix = "NR."
     end)
+
+  let is_spec = ref None 
+  let init_is_spec b = match !is_spec with
+    | None -> 
+      is_spec := Some b; 
+      VDW.init_is_spec b; 
+      R.init_is_spec b;
+      NR.init_is_spec b
+    | Some _ -> assert false    (* Should not initialize this twice *)
 
   let downgrade a = NR.of_box (R.to_box a)
 
@@ -3381,6 +3494,12 @@ module EMs = MakeEqMap(Scmp)
 module type AbsNumBoolType = sig
   type t
 
+  (* Must be called exactly once, to set whether the domain is for a 
+     speculative or standard semantics.
+     Under a speculative semantics, all non-register variables must be handle as
+     weak variables (i.e. weak-memory update). *)
+  val init_is_spec : bool -> unit
+
   (* Make a top value defined on the given variables *)
   val make : mvar list -> mem_loc list -> t
 
@@ -3458,6 +3577,11 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
              init : AbsNum.NR.t EMs.t; 
              num : AbsNum.R.t;
              points_to : Pt.t }
+
+  let is_spec = ref None 
+  let init_is_spec b = match !is_spec with
+    | None -> is_spec := Some b; AbsNum.init_is_spec b
+    | Some _ -> assert false    (* Should not initialize this twice *)
 
   module Mbv2 = Map2(Mbv)
 
@@ -3844,18 +3968,19 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
     fun ?full:(full=false) fmt t ->
     let print_init fmt =
       if Aparam.is_init_no_print then
-        ()
+        Format.fprintf fmt "" 
       else print_init fmt t in
 
     let print_bool fmt =
-      if Aparam.bool_no_print then ()
+      if Aparam.bool_no_print then 
+        Format.fprintf fmt ""
       else begin
         Format.fprintf fmt "@[<v 0>* Bool:@;";
         Mbv.iter (fun bv nrval ->
             Format.fprintf fmt "@[<v 2>%a@;%a@]@;" Bvar.print bv
               (AbsNum.NR.print ~full:true) nrval;
           ) t.bool;
-        Format.fprintf fmt "@]@;" 
+        Format.fprintf fmt "@]@;>" 
       end in
 
     let bool_size = Mbv.cardinal t.bool
@@ -3876,7 +4001,7 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
       Format.fprintf fmt "@[<v 0>%a@]"
         (AbsNum.R.print ~full:full) t.num
     else
-      Format.fprintf fmt "@[<v 0>@[<v 0>%a@]%a@;%t@;%t%t@]@."
+      Format.fprintf fmt "@[<v 0>@[<v 0>%a@]%a@;%t@;%t%t@]@;"
         (AbsNum.R.print ~full:full) t.num
         Pt.print t.points_to
         print_bool_nums
@@ -3892,9 +4017,38 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
   let pop_cnstr_blck t l = { t with num = AbsNum.R.pop_cnstr_blck t.num l }
 end
 
+module AbsDomMake2 (PW : ProgWrap) : sig
+  module AbsDomStd : AbsNumBoolType
+  module AbsDomSpc : AbsNumBoolType
 
-module AbsDomMake (PW : ProgWrap) =
-  AbsBoolNoRel (AbsNumTMake (PW)) (PointsToImpl)
+  val lift : AbsDomStd.t -> AbsDomSpc.t
+
+  val print :
+    print_spc:bool -> Format.formatter -> (AbsDomStd.t * AbsDomSpc.t) -> unit
+end = struct
+  module AbsDomMake (PW : ProgWrap) =
+    AbsBoolNoRel (AbsNumTMake (PW)) (PointsToImpl)
+      
+  module AbsDomStd = AbsDomMake (PW)
+
+  module AbsDomSpc = AbsDomMake (PW)
+
+  let () = AbsDomStd.init_is_spec false
+  let () = AbsDomSpc.init_is_spec true
+
+  let lift (x : AbsDomStd.t) : AbsDomSpc.t = x
+
+  let print ~print_spc fmt (std,spc) =
+    if not print_spc then
+      AbsDomStd.print ~full:true fmt std
+    else
+      Format.eprintf "@[<v 0>\
+                      [* Standard semantics *]@;@[<v 0>%a@]\
+                      [* Speculative semantics *]@;@[<v 0>%a@]@;\
+                      @]%!"
+        (AbsDomStd.print ~full:true) std
+        (AbsDomSpc.print ~full:true) spc
+end  
 
 
 (**********************)
@@ -4008,14 +4162,23 @@ type violation_loc =
   | InProg of Prog.L.t
   | InReturn of funname
 
-type violation = violation_loc * safe_cond
+type sem_kind = 
+  | StdSem                      (* Standard semantics *)
+  | SpcSem                      (* Speculative semantics *)
+
+type violation = violation_loc * sem_kind * safe_cond
 
 let pp_violation_loc fmt = function
   | InProg loc -> Format.fprintf fmt "%a" L.pp_sloc loc
   | InReturn fn -> Format.fprintf fmt "%s return" fn.fn_name
 
-let pp_violation fmt (loc,cond) =
-  Format.fprintf fmt "%a: %a"
+let pp_sem fmt = function
+  | StdSem -> Format.fprintf fmt "standard sem."
+  | SpcSem -> Format.fprintf fmt "speculative sem."
+
+let pp_violation fmt (loc,sem,cond) =
+  Format.fprintf fmt "[%a] %a: %a"
+    pp_sem sem
     pp_violation_loc loc
     pp_safety_cond cond
 
@@ -4023,8 +4186,14 @@ let pp_violations fmt violations =
   if violations = [] then
     Format.fprintf fmt "@[<v>*** No Safety Violation@;@]"
   else
-    Format.fprintf fmt "@[<v 2>*** Safety Violation(s):@;@[<v>%a@]@;@]"
+    Format.fprintf fmt "@[<v 2>*** Safety Violation(s):@;@[<v>%a@]@]"
       (pp_list pp_violation) violations
+
+let sem_compare v v' = match v, v' with
+  | StdSem, StdSem -> 0
+  | SpcSem, SpcSem -> 0
+  | SpcSem, StdSem -> -1
+  | StdSem, SpcSem -> 1
 
 let vloc_compare v v' = match v, v' with
   | InReturn fn, InReturn fn' -> Stdlib.compare fn fn'
@@ -4033,10 +4202,18 @@ let vloc_compare v v' = match v, v' with
   | InProg l, InProg l' ->
     Stdlib.compare (fst l.loc_start) (fst l'.loc_start)
 
-let v_compare v v' =
-  let c = vloc_compare (fst v) (fst v') in
-  if c <> 0 then c
-  else Stdlib.compare (snd v) (snd v')
+let rec lex f = match f with
+  | f_cmp :: f_t ->
+    let c = f_cmp () in
+    if c = 0
+    then lex f_t
+    else c
+  | _ -> 0
+
+let v_compare (loc,sem,c) (loc',sem',c') =
+  lex [(fun () -> vloc_compare loc loc');
+       (fun () ->  sem_compare sem sem');
+       (fun () ->  Stdlib.compare c c')]
 
 let add64 x e = Papp2 (E.Oadd ( E.Op_w U64), Pvar x, e)
 
@@ -4306,6 +4483,37 @@ let check_is_word v = match v.v_ty with
     raise (Aint_error "Bad type")
 
 
+(***************)
+(* Left Values *)
+(***************)
+
+type mlvar =
+  | MLnone
+  | MLvar of mvar
+  | MLvars of mvar list       (* If there is uncertainty on the lvalue where 
+                                 the assignement takes place. *)
+
+let pp_mlvar fmt = function
+  | MLnone -> Format.fprintf fmt "MLnone"
+  | MLvar mv -> Format.fprintf fmt "MLvar %a" pp_mvar mv
+  | MLvars mvs ->
+    Format.fprintf fmt "MLvars @[<hov 2>%a@]"
+      (pp_list pp_mvar) mvs
+
+let mvar_of_lvar_no_array lv = match lv with
+  | Lnone _ -> MLnone
+  | Lmem _ -> MLnone
+  | Lvar x  ->
+    let ux = L.unloc x in
+    begin match ux.v_kind, ux.v_ty with
+      | Global,_ -> assert false (* this case should not be possible *)
+      (* MLvar (Mglobal (ux.v_name,ux.v_ty)) *)
+      | _, Bty _ -> MLvar (Mvalue (Avar ux))
+      | _, Arr _ -> MLvar (Mvalue (Aarray ux)) end
+  | Laset _ -> assert false
+
+
+
 (*********************)
 (* Abstract Iterator *)
 (*********************)
@@ -4327,83 +4535,13 @@ end
 module ItMap = Map.Make(ItKey)
 
 
-(************************)
-(* Abstract Interpreter *)
-(************************)
+(***********************************)
+(* Abstract Expression Interpreter *)
+(***********************************)
 
-module AbsInterpreter (PW : ProgWrap) : sig
-  val analyze : unit -> violation list
-                        * (Format.formatter -> unit -> unit)
-                        * (Format.formatter -> mvar -> unit)
-end = struct
-
-  (* We ensure that all variable names are unique *)
-  let main_decl,prog = MkUniq.mk_uniq PW.main PW.prog;;
-
-  Prof.reset_all ();;
-
-  module AbsDom = AbsDomMake (struct
-      let main = main_decl
-      let prog = prog
-      let param = PW.param
-    end)
-
-  type side_effects = mem_loc list
-
-  (* Function abstraction.
-     This is a bit messy because the same function abstraction can be used
-     with different call-stacks, but the underlying disjunctive domain we 
-     use is sensitive to the call-stack. *)
-  module FAbs : sig
-    type t
-
-    (* [make abs_in abs_out f_effects] *)
-    val make    : AbsDom.t -> AbsDom.t -> side_effects -> t
-
-    (* [ apply in fabs = (f_in, f_out, effects) ]:
-       Return the abstraction of the initial states that was used, the
-       abstract final state, and the side-effects of the function (if the
-       abstraction applies in state [in]).
-       Remarks: 
-       - the final state abstraction [f_out] uses the disjunctions of [in]. *)
-    val apply : AbsDom.t -> t -> (AbsDom.t * side_effects) option
-
-    val get_in : t -> AbsDom.t
-  end = struct
-    (* Sound over-approximation of a function 'f' behavior:
-       for any initial state in [it_in], the state after executing the function
-       'f' is over-approximated by [it_out], the function's side-effects are at
-       most [it_s_effects]. *)
-    type t = { fa_in        : AbsDom.t;
-               fa_out       : AbsDom.t;
-               fa_s_effects : mem_loc list; }
-
-    let make abs_in abs_out f_effects =
-      { fa_in        = AbsDom.remove_disj abs_in;
-        fa_out       = AbsDom.remove_disj abs_out;
-        fa_s_effects = f_effects; }
-
-    let apply abs_in fabs =
-      if AbsDom.is_included abs_in (AbsDom.to_shape fabs.fa_in abs_in) 
-      then begin
-        debug (fun () -> 
-            Format.eprintf "Reusing previous analysis of the body ...@.@.");
-        Some (AbsDom.to_shape fabs.fa_out abs_in, fabs.fa_s_effects)
-      end
-      else None
-
-    let get_in t = t.fa_in
-  end
-
-
-  type astate = { it : FAbs.t ItMap.t;
-                  abs : AbsDom.t;
-                  cstack : funname list;
-                  env : s_env;
-                  prog : unit prog;
-                  s_effects : side_effects;
-                  violations : violation list }
-
+(* Builds and check properties of expressions for the abstract domain
+   [AbsDom], which can be standard of speculative semantics. *)
+module AbsExpr (AbsDom : AbsNumBoolType) = struct
   (* Return true iff the linear expression overflows *)
   let linexpr_overflow abs lin_expr sign ws =
     let int = AbsDom.bound_texpr abs lin_expr in
@@ -4477,7 +4615,7 @@ end = struct
       let c_e = aeval_cst_int abs e in
       let pws = BatInt.pow 2 (int_of_ws ws) in
       omap (fun c_e -> ((c_e mod pws) + pws) mod pws) c_e
-        
+
     | _ -> None
 
 
@@ -4553,7 +4691,7 @@ end = struct
         | AB_Unknown -> raise (Binop_not_supported op2)
         | AB_Shift _ -> assert false (* shift only makes sense on bit-vectors *)
       end
-      
+
     | Pif _ -> raise If_not_supported
 
     | _ -> assert false
@@ -4606,7 +4744,7 @@ end = struct
         | AB_Arith Texpr1.Pow
         | AB_Unknown ->
           raise (Binop_not_supported op2)
-            
+
         | AB_Shift stype  -> match aeval_cst_w abs e2 with
           | Some i when i <= int_of_ws ws_e ->
             let absop = match stype with
@@ -4616,7 +4754,7 @@ end = struct
             let lin = Mtexpr.(binop absop
                                 (linearize_wexpr abs e1)
                                 (cst_pow_minus apr_env i 0)) in
-            
+
             wrap_if_overflow abs lin Unsigned (int_of_ws ws_e)
 
           | _ ->
@@ -4688,7 +4826,7 @@ end = struct
           ((Papp1 (E.Onot,b)) :: l_bool,expr))
           (remove_if_expr er))
     | None -> [([],e)]
-                   
+
   let op2_to_typ op2 =
     let to_cmp_kind = function
       | E.Op_int -> E.Cmp_int
@@ -4708,55 +4846,55 @@ end = struct
 
     | Ovadd (_, _) | Ovsub (_, _) | Ovmul (_, _)
     | Ovlsr (_, _) | Ovlsl (_, _) | Ovasr (_, _) -> assert false
-  
+
   let rec bexpr_to_btcons_aux : AbsDom.t -> 'a Prog.gexpr -> btcons =
     fun abs e ->
-      let aux = bexpr_to_btcons_aux abs in
-      match e with
-      | Pbool b ->
-        let cons =
-          if b then true_tcons1 (AbsDom.get_env abs)
-          else false_tcons1 (AbsDom.get_env abs) in
-        BLeaf cons
+    let aux = bexpr_to_btcons_aux abs in
+    match e with
+    | Pbool b ->
+      let cons =
+        if b then true_tcons1 (AbsDom.get_env abs)
+        else false_tcons1 (AbsDom.get_env abs) in
+      BLeaf cons
 
-      | Pvar x -> BVar (Bvar.make (Mvalue (Avar (L.unloc x))) true)
+    | Pvar x -> BVar (Bvar.make (Mvalue (Avar (L.unloc x))) true)
 
-      | Pglobal _ -> assert false (* Global variables are of type word *)
+    | Pglobal _ -> assert false (* Global variables are of type word *)
 
-      | Pif(_,e1,et,ef) ->
-        let bet, bef, be1 = aux et, aux ef, aux e1 in
-        let be1_f = match flip_btcons be1 with
-          | Some c -> c
-          | None -> raise Bop_not_supported in
+    | Pif(_,e1,et,ef) ->
+      let bet, bef, be1 = aux et, aux ef, aux e1 in
+      let be1_f = match flip_btcons be1 with
+        | Some c -> c
+        | None -> raise Bop_not_supported in
 
-        BOr ( BAnd(be1,bet), BAnd(be1_f,bef) )
+      BOr ( BAnd(be1,bet), BAnd(be1_f,bef) )
 
-      | Papp1 (op1, e1) -> begin match op1 with
-          | E.Onot ->
-            let be1 = aux e1 in
-            begin match flip_btcons be1 with
-              | Some c -> c
-              | None -> raise Bop_not_supported end
-          | _ -> assert false end
+    | Papp1 (op1, e1) -> begin match op1 with
+        | E.Onot ->
+          let be1 = aux e1 in
+          begin match flip_btcons be1 with
+            | Some c -> c
+            | None -> raise Bop_not_supported end
+        | _ -> assert false end
 
-      | Papp2 (op2, e1, e2) -> begin match op2 with
-          | E.Oadd _ | E.Omul _ | E.Osub _
-          | E.Odiv _ | E.Omod _ | E.Oland _ | E.Olor _
-          | E.Olxor _ | E.Olsr _ | E.Olsl _ | E.Oasr _ -> assert false
+    | Papp2 (op2, e1, e2) -> begin match op2 with
+        | E.Oadd _ | E.Omul _ | E.Osub _
+        | E.Odiv _ | E.Omod _ | E.Oland _ | E.Olor _
+        | E.Olxor _ | E.Olsr _ | E.Olsl _ | E.Oasr _ -> assert false
 
-          | Ovadd (_, _) | Ovsub (_, _) | Ovmul (_, _)
-          | Ovlsr (_, _) | Ovlsl (_, _) | Ovasr (_, _) -> assert false
+        | Ovadd (_, _) | Ovsub (_, _) | Ovmul (_, _)
+        | Ovlsr (_, _) | Ovlsl (_, _) | Ovasr (_, _) -> assert false
 
-          | E.Oand -> BAnd ( aux e1, aux e2 )
+        | E.Oand -> BAnd ( aux e1, aux e2 )
 
-          | E.Oor -> BOr ( aux e1, aux e2 )
+        | E.Oor -> BOr ( aux e1, aux e2 )
 
-          | E.Oeq _ | E.Oneq _ | E.Olt _ | E.Ole _ | E.Ogt _ | E.Oge _ ->
-            match remove_if_expr_aux e with
-            | Some (ty,eb,el,er)  -> aux (Pif (ty,eb,el,er))
-            | None -> flat_bexpr_to_btcons abs op2 e1 e2 end
+        | E.Oeq _ | E.Oneq _ | E.Olt _ | E.Ole _ | E.Ogt _ | E.Oge _ ->
+          match remove_if_expr_aux e with
+          | Some (ty,eb,el,er)  -> aux (Pif (ty,eb,el,er))
+          | None -> flat_bexpr_to_btcons abs op2 e1 e2 end
 
-      | _ -> assert false
+    | _ -> assert false
 
   and flat_bexpr_to_btcons abs op2 e1 e2 =
     let e1',e2' = swap_op2 op2 e1 e2 in
@@ -4768,7 +4906,7 @@ end = struct
           let lin1 = linearize_iexpr abs e1'
           and lin2 = linearize_iexpr abs e2' in
           lin2, lin1
-          (* Mtexpr.(binop Sub lin2 lin1) *)
+        (* Mtexpr.(binop Sub lin2 lin1) *)
 
         | E.Cmp_w (sign, ws) ->
           let lin1 = match ty_expr e1' with
@@ -4797,7 +4935,7 @@ end = struct
         | _ -> Mtexpr.(binop Sub lin2 lin1) 
       in
       BLeaf (Mtcons.make expr lincons)
-          
+
     with Unop_not_supported _ | Binop_not_supported _ ->
       raise Bop_not_supported
 
@@ -4809,73 +4947,53 @@ end = struct
 
   let linearize_if_iexpr : 'a Prog.gexpr -> AbsDom.t -> s_expr =
     fun e abs ->
-      List.map (fun (bexpr_list, expr) ->
-          let f x = bexpr_to_btcons x abs in
-          let b_list = List.map f bexpr_list in
+    List.map (fun (bexpr_list, expr) ->
+        let f x = bexpr_to_btcons x abs in
+        let b_list = List.map f bexpr_list in
 
-          let b_list =
-            if List.exists (fun x -> x = None) b_list then []
-            else List.map oget b_list in
+        let b_list =
+          if List.exists (fun x -> x = None) b_list then []
+          else List.map oget b_list in
 
-          let lin_expr = try Some (linearize_iexpr abs expr) with
-            | Unop_not_supported _ | Binop_not_supported _ -> None in
+        let lin_expr = try Some (linearize_iexpr abs expr) with
+          | Unop_not_supported _ | Binop_not_supported _ -> None in
 
-          (b_list, lin_expr))
-        (remove_if_expr e)
+        (b_list, lin_expr))
+      (remove_if_expr e)
 
   let linearize_if_wexpr : int -> ty gexpr -> AbsDom.t -> s_expr =
     fun out_sw e abs ->
-      List.map (fun (bexpr_list, expr) ->
-          let f x = bexpr_to_btcons x abs in
-          let b_list = List.map f bexpr_list in
+    List.map (fun (bexpr_list, expr) ->
+        let f x = bexpr_to_btcons x abs in
+        let b_list = List.map f bexpr_list in
 
-          let b_list =
-            if List.exists (fun x -> x = None) b_list then []
-            else List.map oget b_list in
+        let b_list =
+          if List.exists (fun x -> x = None) b_list then []
+          else List.map oget b_list in
 
-          let in_sw = ws_of_ty (ty_expr e) in
+        let in_sw = ws_of_ty (ty_expr e) in
 
-          let lin_expr =
-            try linearize_wexpr abs expr
-                |> cast_if_overflows abs out_sw (int_of_ws in_sw)
-                |> some
-            with | Unop_not_supported _ | Binop_not_supported _ -> None in
+        let lin_expr =
+          try linearize_wexpr abs expr
+              |> cast_if_overflows abs out_sw (int_of_ws in_sw)
+              |> some
+          with | Unop_not_supported _ | Binop_not_supported _ -> None in
 
-          (b_list, lin_expr))
-        (remove_if_expr e)
+        (b_list, lin_expr))
+      (remove_if_expr e)
 
   let rec linearize_if_expr : int -> 'a Prog.gexpr -> AbsDom.t -> s_expr =
     fun out_ws e abs ->
-      match ty_expr e with
-      | Bty Int ->
-        assert (out_ws = -1);
-        linearize_if_iexpr e abs
+    match ty_expr e with
+    | Bty Int ->
+      assert (out_ws = -1);
+      linearize_if_iexpr e abs
 
-      | Bty (U _) -> linearize_if_wexpr out_ws e abs
+    | Bty (U _) -> linearize_if_wexpr out_ws e abs
 
-      | Bty Bool -> assert false
-      | Arr _ -> assert false
+    | Bty Bool -> assert false
+    | Arr _ -> assert false
 
-
-  let init_env : 'info prog -> mem_loc list -> s_env =
-    fun (glob_decls, fun_decls) mem_locs ->
-      let env = { s_glob = Ms.empty; m_locs = mem_locs } in
-      let env =
-        List.fold_left (fun env (ws, x, _) -> add_glob env x ws)
-          env glob_decls in
-
-      List.fold_left (fun env f_decl ->
-          { env with s_glob = List.fold_left (fun s_glob ginstr ->
-                add_glob_instr s_glob ginstr)
-                env.s_glob f_decl.f_body })
-        env fun_decls
-
-  let init_state_init_args f_args state =
-    List.fold_left (fun state v -> match v with
-        | Mvalue at ->
-          { state with abs = AbsDom.is_init state.abs at }
-        | _ -> state )
-      state f_args
 
   let set_zeros f_args abs =
     List.fold_left (fun abs v -> match v with
@@ -4917,165 +5035,7 @@ end = struct
       abs globs
 
 
-  let init_state : unit func -> unit prog -> astate =
-    fun main_decl (glob_decls, fun_decls) ->
-      let mem_locs = List.map (fun x -> MemLoc x) main_decl.f_args in
-      let env = init_env (glob_decls, fun_decls) mem_locs in
-      let it = ItMap.empty in
-
-      (* We add the initial variables *)
-      let f_args = fun_args ~expand_arrays:true main_decl in
-      (* If f_args is empty, we add a dummy variable to avoid having an
-         empty relational abstraction *)
-      let f_args = if f_args = [] then [dummy_mvar] else f_args in
-
-      let f_in_args = List.map in_cp_var f_args
-      and m_locs = List.map (fun mloc -> MmemRange mloc ) env.m_locs in
-
-
-      (* We set the offsets and ranges to zero, and bound the variables using
-         their types. E.g. register of type U 64 is in [0;2^64]. *)
-      let abs = AbsDom.make (f_args @ m_locs) mem_locs
-                |> set_zeros (f_args @ m_locs)
-                |> set_bounds f_args in
-
-      (* We apply the global declarations *)
-      let abs = apply_glob glob_decls abs in
-
-      (* We extend the environment to its local variables *)
-      let f_vars = (List.map otolist f_in_args |> List.flatten)
-                   @ fun_vars ~expand_arrays:true main_decl env in
-
-      let abs = AbsDom.change_environment abs f_vars in
-
-      (* We keep track of the initial values. *)
-      let abs = List.fold_left2 (fun abs x oy -> match oy with
-          | None -> abs
-          | Some y ->
-            let sexpr = Mtexpr.var (AbsDom.get_env abs) x
-                        |> sexpr_from_simple_expr in
-            AbsDom.assign_sexpr abs y sexpr)
-          abs f_args f_in_args in
-
-      { it = it;
-        abs = abs;
-        cstack = [main_decl.f_name];
-        env = env;
-        prog = (glob_decls, fun_decls);
-        s_effects = [];
-        violations = [] }
-
-      (* We initialize the arguments. Note that for exported function, we 
-         know that input arrays are initialized. *)
-      |> init_state_init_args (fun_args ~expand_arrays:true main_decl)
-
-  (* Checks that all safety conditions hold, except for valid memory access. *)
-  let rec is_safe state = function
-    | Initv v -> begin match mvar_of_var v with
-        | Mvalue at -> AbsDom.check_init state.abs at
-        | _ -> assert false end
-
-    | Initai (v,ws,e) -> begin match mvar_of_var v with
-        | Mvalue (Aarray v) ->
-          let is = abs_arr_range state.abs v ws e in
-          List.for_all (AbsDom.check_init state.abs) is
-        | _ -> assert false end
-
-    | InBound (i,ws,e) ->
-      (* We check that (e + 1) * ws/8 is no larger than i *)
-      let epp = Papp2 (E.Oadd E.Op_int,
-                       e,
-                       Pconst (B.of_int 1)) in
-      let wse = Papp2 (E.Omul E.Op_int,
-                       epp,
-                       Pconst (B.of_int ((int_of_ws ws) / 8))) in
-      let be = Papp2 (E.Ogt E.Cmp_int, wse, Pconst (B.of_int i)) in
-
-      begin match bexpr_to_btcons be state.abs with
-        | None -> false
-        | Some c -> AbsDom.is_bottom (AbsDom.meet_btcons state.abs c) end
-
-    | NotZero (ws,e) ->
-      (* We check that e is never 0 *)
-      let be = Papp2 (E.Oeq (E.Op_w ws), e, pcast ws (Pconst (B.of_int 0))) in
-      begin match bexpr_to_btcons be state.abs with
-        | None -> false
-        | Some c -> AbsDom.is_bottom (AbsDom.meet_btcons state.abs c) end
-
-    | Valid _ | Termination -> true (* These are checked elsewhere *)
-
-  (* Update abs with the abstract memory range for memory accesses. *)
-  let rec mem_safety_apply (abs, violations, s_effect) = function
-    | Valid (ws,x,e) as pv ->
-      begin match AbsDom.var_points_to abs (mvar_of_var x) with
-        | Ptrs pts ->
-          if List.length pts = 1 then
-            let pt = List.hd pts in
-            let x_o = Mtexpr.var (AbsDom.get_env abs) (MvarOffset x) in
-            let lin_e = linearize_wexpr abs e in
-            let c_ws =
-              ((int_of_ws ws) / 8)
-              |> Coeff.s_of_int
-              |> Mtexpr.cst (AbsDom.get_env abs) in
-            let ws_plus_e = Mtexpr.binop Texpr1.Add c_ws lin_e in
-            let sexpr = Mtexpr.binop Texpr1.Add x_o ws_plus_e
-                        |> sexpr_from_simple_expr in
-
-            ( AbsDom.assign_sexpr abs (MmemRange pt) sexpr,
-              violations,
-              if List.mem pt s_effect then s_effect else pt :: s_effect)
-          else (abs, pv :: violations, s_effect)
-        | TopPtr -> (abs, pv :: violations, s_effect) end
-
-    | _ -> (abs, violations, s_effect)
-
-  let rec check_safety_rec state unsafe = function
-    | [] -> unsafe
-    | c :: t ->
-      if is_safe state c then check_safety_rec state unsafe t
-      else check_safety_rec state (c :: unsafe) t
-
-  let rec mem_safety_rec a = function
-    | [] -> a
-    | c :: t -> mem_safety_rec (mem_safety_apply a c) t
-
-
-  let add_violations : astate -> violation list -> astate = fun state ls ->
-    if ls <> [] then Format.eprintf "%a@." pp_violations ls;
-    { state with violations = List.sort_uniq v_compare (ls @ state.violations) }
-
-  let rec check_safety state loc conds =
-    let vsc = check_safety_rec state [] conds in
-    let abs, mvsc, s_effects =
-      mem_safety_rec (state.abs, [], state.s_effects) conds in
-    let state = { state with abs = abs; s_effects = s_effects } in
-    let unsafe = vsc @ mvsc |> List.map (fun x -> (loc,x)) in
-    add_violations state unsafe
-
-  type mlvar =
-    | MLnone
-    | MLvar of mvar
-    | MLvars of mvar list       (* If there is uncertainty on the lvalue where 
-                                   the assignement takes place. *)
-
-  let pp_mlvar fmt = function
-    | MLnone -> Format.fprintf fmt "MLnone"
-    | MLvar mv -> Format.fprintf fmt "MLvar %a" pp_mvar mv
-    | MLvars mvs ->
-      Format.fprintf fmt "MLvars @[<hov 2>%a@]"
-        (pp_list pp_mvar) mvs
-
-  let mvar_of_lvar_no_array lv = match lv with
-    | Lnone _ -> MLnone
-    | Lmem _ -> MLnone
-    | Lvar x  ->
-      let ux = L.unloc x in
-      begin match ux.v_kind, ux.v_ty with
-        | Global,_ -> MLvar (Mglobal (ux.v_name,ux.v_ty))
-        | _, Bty _ -> MLvar (Mvalue (Avar ux))
-        | _, Arr _ -> MLvar (Mvalue (Aarray ux)) end
-    | Laset _ -> assert false
-      
+  (*-------------------------------------------------------------------------*)
   (* Return te mvar where the abstract assignment takes place. For now, no
      abstraction of the memory. *)
   let mvar_of_lvar abs lv = match lv with
@@ -5087,7 +5047,6 @@ end = struct
       | [] -> assert false
       | [mv] -> MLvar (mv)
       | _ as mvs -> MLvars mvs
-
 
   let apply_offset_expr abs outmv inv offset_expr =
     match ty_gvar_of_mvar outmv with
@@ -5133,7 +5092,6 @@ end = struct
         | _ -> aeval_top_offset abs outmv end
 
     | _ -> aeval_top_offset abs outmv
-  
 
   (* Initialize variable or array elements. *)
   let a_init_mv_no_array mv abs = match mv with
@@ -5145,10 +5103,6 @@ end = struct
   let a_init_mlv_no_array mlv abs = match mlv with
     | MLvar mv -> a_init_mv_no_array mv abs
     | _ -> assert false
-
-  (* Initialize variable or array elements lvalues. *)
-  let init_mlv_no_array mlv state = 
-    { state with abs = a_init_mlv_no_array mlv state.abs }
 
   (* Array assignment. Does the numerical assignments.
      Remark: array elements do not need to be tracked in the point-to
@@ -5182,63 +5136,441 @@ end = struct
         | _ -> assert false end
     | _ -> assert false
 
+
   let omvar_is_offset = function
     | MLvar (MvarOffset _) -> true
     | _ -> false
-      
+
   (* Abstract evaluation of an assignment. 
      Also handles variable initialization. *)
-  let abs_assign : astate -> 'a gty -> mlvar -> ty gexpr -> astate =
-    fun state out_ty out_mvar e ->
+  let abs_assign : AbsDom.t -> 'a gty -> mlvar -> ty gexpr -> AbsDom.t =
+    fun abs out_ty out_mvar e ->
       assert (not (omvar_is_offset out_mvar));
       match ty_expr e, out_mvar with
-      | _, MLnone -> state
+      | _, MLnone -> abs
 
-      | _, MLvars vs ->
-        (* Here, we have no information on which elements are initialized. *)
-        { state with abs = AbsDom.forget_list state.abs vs }
+      (* Here, we have no information on which elements are initialized. *)
+      | _, MLvars vs -> AbsDom.forget_list abs vs 
 
       | Bty Int, MLvar mvar | Bty (U _), MLvar mvar ->
         (* Numerical abstraction *)
         let lv_s = wsize_of_ty out_ty in
-        let s_expr = linearize_if_expr lv_s e state.abs in
-        let abs = AbsDom.assign_sexpr state.abs mvar s_expr in
+        let s_expr = linearize_if_expr lv_s e abs in
+        let abs0 = abs in
+        let abs = AbsDom.assign_sexpr abs mvar s_expr in
 
         (* Points-to abstraction *)
-        let ptr_expr = ptr_expr_of_expr state.abs e in
+        let ptr_expr = ptr_expr_of_expr abs0 e in
         let abs = AbsDom.assign_ptr_expr abs mvar ptr_expr in
 
         (* Offset abstraction *)
         let abs = aeval_offset abs out_ty mvar e in
-
-        { state with abs = abs }
-        |> init_mlv_no_array out_mvar
+        
+        a_init_mlv_no_array out_mvar abs
 
       | Bty Bool, MLvar mvar ->
         begin
-          let state = match bexpr_to_btcons e state.abs with
-            | None -> { state with abs = AbsDom.forget_bvar state.abs mvar }
-            | Some btcons ->
-              let abs' = AbsDom.assign_bexpr state.abs mvar btcons in
-              { state with abs = abs' } in
-          init_mlv_no_array out_mvar state
+          let abs = match bexpr_to_btcons e abs with
+            | None -> AbsDom.forget_bvar abs mvar 
+            | Some btcons -> AbsDom.assign_bexpr abs mvar btcons in
+          a_init_mlv_no_array out_mvar abs
         end
 
       | Arr _, MLvar mvar ->
         match e with
         | Pvar x ->
-          let apr_env = AbsDom.get_env state.abs in
+          let apr_env = AbsDom.get_env abs in
           let se = Mtexpr.var apr_env (Mvalue (Aarray (L.unloc x))) in
           begin match mvar with
-            | Mvalue (Aarray _) | Temp _ ->
-              { state with abs = assign_arr_expr state.abs mvar se }
+            | Mvalue (Aarray _) -> assign_arr_expr abs mvar se 
+            | Temp _ -> assert false (* this case should not be possible *)
             | _ -> assert false end
 
-        | Parr_init _ -> state
+        | Parr_init _ -> abs
 
         | _ ->
           Format.eprintf "@[%a@]@." (Printer.pp_expr ~debug:true) e;
           assert false
+
+  let abs_assign_opn abs lvs assgns =
+    let abs, mlvs_forget =
+      List.fold_left2 (fun (abs, mlvs_forget) lv e_opt ->
+          match mvar_of_lvar abs lv, e_opt with
+          | MLnone,_ -> (abs, mlvs_forget)
+
+          | MLvar mlv as cmlv, None ->
+            (* Remark: n-ary operation cannot return arrays. *)
+            let abs = a_init_mlv_no_array cmlv abs in
+            (abs, mlv :: mlvs_forget)
+          | MLvar mlv, Some e ->
+            (abs_assign abs (ty_lval lv) (MLvar mlv) e, mlvs_forget)
+
+          | MLvars mlvs, _ -> (abs, mlvs @ mlvs_forget))
+        (abs,[]) lvs assgns in
+
+    let mlvs_forget = List.sort_uniq Stdlib.compare mlvs_forget in
+
+    AbsDom.forget_list abs mlvs_forget 
+
+end
+
+
+(************************)
+(* Abstract Interpreter *)
+(************************)
+
+module AbsInterpreter (PW : ProgWrap) : sig
+  val analyze : unit -> violation list
+                        * (Format.formatter -> unit -> unit)
+                        * (Format.formatter -> mvar -> unit)
+                        * (Format.formatter -> mvar -> unit)
+end = struct
+
+  (* We ensure that all variable names are unique *)
+  let main_decl,prog = MkUniq.mk_uniq PW.main PW.prog;;
+
+  Prof.reset_all ();;
+
+
+  (*---------------------------------------------------------------*)
+  module AbsDom2 = AbsDomMake2 (struct
+      let main = main_decl
+      let prog = prog
+      let param = PW.param
+    end)
+
+  (* Abstract domain for the standard semantics. *)
+  module AbsDomStd = AbsDom2.AbsDomStd
+
+  (* Abstract domain for the speculative semantics. *)
+  module AbsDomSpc = AbsDom2.AbsDomSpc
+
+  let std_to_spc = AbsDom2.lift
+
+  module AbsExprStd = AbsExpr (AbsDomStd)
+  module AbsExprSpc = AbsExpr (AbsDomSpc)
+
+  (*---------------------------------------------------------------*)
+  type side_effects = mem_loc list
+
+  (* Function abstraction.
+     This is a bit messy because the same function abstraction can be used
+     with different call-stacks, but the underlying disjunctive domain we 
+     use is sensitive to the call-stack. 
+     Remark: we cannot analyse function calls under the speculative 
+     semantics. *)
+  module FAbs : sig
+    type t
+
+    (* [make abs_in abs_out f_effects] *)
+    val make    : AbsDomStd.t -> AbsDomStd.t -> side_effects -> t
+
+    (* [ apply in fabs = (f_in, f_out, effects) ]:
+       Return the abstraction of the initial states that was used, the
+       abstract final state, and the side-effects of the function (if the
+       abstraction applies in state [in]).
+       Remarks: 
+       - the final state abstraction [f_out] uses the disjunctions of [in]. *)
+    val apply : AbsDomStd.t -> t -> (AbsDomStd.t * side_effects) option
+
+    val get_in : t -> AbsDomStd.t
+  end = struct
+    (* Sound over-approximation of a function 'f' behavior:
+       for any initial state in [it_in], the state after executing the function
+       'f' is over-approximated by [it_out], the function's side-effects are at
+       most [it_s_effects]. *)
+    type t = { fa_in        : AbsDomStd.t;
+               fa_out       : AbsDomStd.t;
+               fa_s_effects : mem_loc list; }
+
+    let make abs_in abs_out f_effects =
+      { fa_in        = AbsDomStd.remove_disj abs_in;
+        fa_out       = AbsDomStd.remove_disj abs_out;
+        fa_s_effects = f_effects; }
+
+    let apply abs_in fabs =
+      if AbsDomStd.is_included abs_in (AbsDomStd.to_shape fabs.fa_in abs_in) 
+      then begin
+        debug (fun () -> 
+            Format.eprintf "Reusing previous analysis of the body ...@.@.");
+        Some (AbsDomStd.to_shape fabs.fa_out abs_in, fabs.fa_s_effects)
+      end
+      else None
+
+    let get_in t = t.fa_in
+  end
+
+
+  (*---------------------------------------------------------------*)
+  type astate = { it : FAbs.t ItMap.t;
+                  abs_std : AbsDomStd.t; (* standard semantics *)
+                  abs_spc : AbsDomSpc.t; (* speculative semantics *)
+                  spec_analysis : bool;  
+                  cstack : funname list;
+                  env : s_env;
+                  prog : unit prog;
+                  s_effects : side_effects;
+                  violations : violation list }
+
+
+  (* TODO: get rid of initialization for speculative semantics ? *)
+  let init_state_init_args f_args state =
+    List.fold_left (fun state v -> match v with
+        | Mvalue at ->
+          { state with abs_std = AbsDomStd.is_init state.abs_std at;
+                       abs_spc = AbsDomSpc.is_init state.abs_spc at; }
+        | _ -> state )
+      state f_args
+
+  let init_env : 'info prog -> mem_loc list -> s_env =
+    fun (glob_decls, fun_decls) mem_locs ->
+    let env = { s_glob = Ms.empty; m_locs = mem_locs } in
+    let env =
+      List.fold_left (fun env (ws, x, _) -> add_glob env x ws)
+        env glob_decls in
+
+    List.fold_left (fun env f_decl ->
+        { env with s_glob = List.fold_left (fun s_glob ginstr ->
+              add_glob_instr s_glob ginstr)
+              env.s_glob f_decl.f_body })
+      env fun_decls
+
+  let init_state : unit func -> unit prog -> astate =
+    fun main_decl (glob_decls, fun_decls) ->
+      let mem_locs = List.map (fun x -> MemLoc x) main_decl.f_args in
+      let env = init_env (glob_decls, fun_decls) mem_locs in
+      let it = ItMap.empty in
+
+      (* We add the initial variables *)
+      let f_args = fun_args ~expand_arrays:true main_decl in
+      (* If f_args is empty, we add a dummy variable to avoid having an
+         empty relational abstraction *)
+      let f_args = if f_args = [] then [dummy_mvar] else f_args in
+
+      let f_in_args = List.map in_cp_var f_args
+      and m_locs = List.map (fun mloc -> MmemRange mloc ) env.m_locs in
+
+      (* We set the offsets and ranges to zero, and bound the variables using
+         their types. E.g. register of type U 64 is in [0;2^64]. *)
+      let abs = AbsDomStd.make (f_args @ m_locs) mem_locs
+                |> AbsExprStd.set_zeros (f_args @ m_locs)
+                |> AbsExprStd.set_bounds f_args in
+
+      (* We apply the global declarations *)
+      let abs = AbsExprStd.apply_glob glob_decls abs in
+
+      (* We extend the environment to its local variables *)
+      let f_vars = (List.map otolist f_in_args |> List.flatten)
+                   @ fun_vars ~expand_arrays:true main_decl env in
+
+      let abs = AbsDomStd.change_environment abs f_vars in
+
+      (* We keep track of the initial values. *)
+      let abs = List.fold_left2 (fun abs x oy -> match oy with
+          | None -> abs
+          | Some y ->
+            let sexpr = Mtexpr.var (AbsDomStd.get_env abs) x
+                        |> sexpr_from_simple_expr in
+            AbsDomStd.assign_sexpr abs y sexpr)
+          abs f_args f_in_args in
+
+      { it = it;
+        abs_std = abs;
+        abs_spc = std_to_spc abs; (* initially, the two semantics coincide. *)
+        spec_analysis = true;
+        cstack = [main_decl.f_name];
+        env = env;
+        prog = (glob_decls, fun_decls);
+        s_effects = [];
+        violations = [] }
+
+      (* We initialize the arguments. Note that for exported function, we 
+         know that input arrays are initialized. *)
+      |> init_state_init_args (fun_args ~expand_arrays:true main_decl)
+
+
+  (*-------------------------------------------------------------------------*)
+  (* Checks that all safety conditions hold for the standard semantics, except
+     for valid memory access. *)
+  let is_safe_std state = function
+    | Initv v -> begin match mvar_of_var v with
+        | Mvalue at -> AbsDomStd.check_init state.abs_std at
+        | _ -> assert false end
+
+    | Initai (v,ws,e) -> begin match mvar_of_var v with
+        | Mvalue (Aarray v) ->
+          let is = AbsExprStd.abs_arr_range state.abs_std v ws e in
+          List.for_all (AbsDomStd.check_init state.abs_std) is
+        | _ -> assert false end
+
+    | InBound (i,ws,e) ->
+      (* We check that (e + 1) * ws/8 is no larger than i *)
+      let epp = Papp2 (E.Oadd E.Op_int,
+                       e,
+                       Pconst (B.of_int 1)) in
+      let wse = Papp2 (E.Omul E.Op_int,
+                       epp,
+                       Pconst (B.of_int ((int_of_ws ws) / 8))) in
+      let be = Papp2 (E.Ogt E.Cmp_int, wse, Pconst (B.of_int i)) in
+
+      begin match AbsExprStd.bexpr_to_btcons be state.abs_std with
+        | None -> false
+        | Some c -> 
+          AbsDomStd.is_bottom (AbsDomStd.meet_btcons state.abs_std c) end
+
+    | NotZero (ws,e) ->
+      (* We check that e is never 0 *)
+      let be = Papp2 (E.Oeq (E.Op_w ws), e, pcast ws (Pconst (B.of_int 0))) in
+      begin match AbsExprStd.bexpr_to_btcons be state.abs_std with
+        | None -> false
+        | Some c -> 
+          AbsDomStd.is_bottom (AbsDomStd.meet_btcons state.abs_std c) end
+
+    | Valid _ | Termination -> true (* These are checked elsewhere *)
+
+  (* Update abs with the abstract memory range for memory accesses. *)
+  let mem_safety_apply_std (abs, violations, s_effect) = function
+    | Valid (ws,x,e) as pv ->
+      begin match AbsDomStd.var_points_to abs (mvar_of_var x) with
+        | Ptrs pts ->
+          if List.length pts = 1 then
+            let pt = List.hd pts in
+            let x_o = Mtexpr.var (AbsDomStd.get_env abs) (MvarOffset x) in
+            let lin_e = AbsExprStd.linearize_wexpr abs e in
+            let c_ws =
+              ((int_of_ws ws) / 8)
+              |> Coeff.s_of_int
+              |> Mtexpr.cst (AbsDomStd.get_env abs) in
+            let ws_plus_e = Mtexpr.binop Texpr1.Add c_ws lin_e in
+            let sexpr = Mtexpr.binop Texpr1.Add x_o ws_plus_e
+                        |> sexpr_from_simple_expr in
+
+            ( AbsDomStd.assign_sexpr abs (MmemRange pt) sexpr,
+              violations,
+              if List.mem pt s_effect then s_effect else pt :: s_effect)
+          else (abs, pv :: violations, s_effect)
+        | TopPtr -> (abs, pv :: violations, s_effect) end
+
+    | _ -> (abs, violations, s_effect)
+
+
+  (*-------------------------------------------------------------------------*)
+  (* Checks that all safety conditions hold for the speculatieve semantics,
+     except for valid memory access. *)
+  let is_safe_spc state = function
+    (* we do not check initialization for the speculative semantics *)
+    | Initv _ | Initai _ -> true 
+
+    | InBound (i,ws,e) ->
+      (* We check that (e + 1) * ws/8 is no larger than i *)
+      let epp = Papp2 (E.Oadd E.Op_int,
+                       e,
+                       Pconst (B.of_int 1)) in
+      let wse = Papp2 (E.Omul E.Op_int,
+                       epp,
+                       Pconst (B.of_int ((int_of_ws ws) / 8))) in
+      let be = Papp2 (E.Ogt E.Cmp_int, wse, Pconst (B.of_int i)) in
+
+      begin match AbsExprSpc.bexpr_to_btcons be state.abs_spc with
+        | None -> false
+        | Some c -> 
+          AbsDomSpc.is_bottom (AbsDomSpc.meet_btcons state.abs_spc c) end
+
+    | NotZero (ws,e) ->
+      (* We check that e is never 0 *)
+      let be = Papp2 (E.Oeq (E.Op_w ws), e, pcast ws (Pconst (B.of_int 0))) in
+      begin match AbsExprSpc.bexpr_to_btcons be state.abs_spc with
+        | None -> false
+        | Some c -> 
+          AbsDomSpc.is_bottom (AbsDomSpc.meet_btcons state.abs_spc c) end
+
+    | Valid _ -> true (* This are checked elsewhere *)
+
+      (* We do not check termination for the speculative semantics *)
+    | Termination -> true   
+
+  (* Update abs with the abstract memory range for memory accesses. *)
+  let rec mem_safety_apply_spc (abs, violations, s_effect) = function
+    | Valid (ws,x,e) as pv ->
+      begin match AbsDomSpc.var_points_to abs (mvar_of_var x) with
+        | Ptrs pts ->
+          if List.length pts = 1 then
+            let pt = List.hd pts in
+            let x_o = Mtexpr.var (AbsDomSpc.get_env abs) (MvarOffset x) in
+            let lin_e = AbsExprSpc.linearize_wexpr abs e in
+            let c_ws =
+              ((int_of_ws ws) / 8)
+              |> Coeff.s_of_int
+              |> Mtexpr.cst (AbsDomSpc.get_env abs) in
+            let ws_plus_e = Mtexpr.binop Texpr1.Add c_ws lin_e in
+            let sexpr = Mtexpr.binop Texpr1.Add x_o ws_plus_e
+                        |> sexpr_from_simple_expr in
+
+            ( AbsDomSpc.assign_sexpr abs (MmemRange pt) sexpr,
+              violations,
+              if List.mem pt s_effect then s_effect else pt :: s_effect)
+          else (abs, pv :: violations, s_effect)
+        | TopPtr -> (abs, pv :: violations, s_effect) end
+
+    | _ -> (abs, violations, s_effect)
+
+
+  (*-------------------------------------------------------------------------*)
+  let rec check_safety_rec state unsafe = function
+    | [] -> unsafe
+    | c :: t ->
+      let unsafe = 
+        if is_safe_std state c
+        then unsafe
+        else (StdSem,c) :: unsafe 
+      in
+      let unsafe = 
+        if is_safe_spc state c
+        then unsafe
+        else (SpcSem,c) :: unsafe 
+      in
+      check_safety_rec state unsafe t 
+        
+  let rec mem_safety_std_rec a = function
+    | [] -> a
+    | c :: t ->       
+      mem_safety_std_rec (mem_safety_apply_std a c) t
+
+  let rec mem_safety_spc_rec a = function
+    | [] -> a
+    | c :: t ->       
+      mem_safety_spc_rec (mem_safety_apply_spc a c) t
+
+  let add_violations : astate -> violation list -> astate = fun state ls ->
+    if ls <> [] then Format.eprintf "%a@." pp_violations ls;
+    { state with violations = List.sort_uniq v_compare (ls @ state.violations) }
+    
+  let rec check_safety state loc conds =
+    let vsc = check_safety_rec state [] conds in
+    let abs_std, mvsc_std, s_effects =
+      mem_safety_std_rec (state.abs_std, [], state.s_effects) conds in
+    let abs_spc, mvsc_spc, s_effects =
+      mem_safety_spc_rec (state.abs_spc, [], s_effects) conds in
+    
+    let state = { state with abs_std = abs_std;
+                             abs_spc = abs_spc;
+                             s_effects = s_effects } in
+    
+    let mvsc_std = List.map (fun x -> StdSem,x) mvsc_std
+    and mvsc_spc = List.map (fun x -> SpcSem,x) mvsc_spc in
+    let unsafe = vsc @ mvsc_std @ mvsc_spc
+                 |> List.map (fun (x,y) -> (loc,x,y)) in
+    add_violations state unsafe
+
+      
+  (*-------------------------------------------------------------------------*)
+  (* TODO: remove initialization in speculative semantics? 
+     if not, check that this is correct *)
+  (* Initialize variable or array elements lvalues. *)
+  let init_mlv_no_array mlv state = 
+    { state with abs_std = AbsExprStd.a_init_mlv_no_array mlv state.abs_std;
+                 abs_spc = AbsExprSpc.a_init_mlv_no_array mlv state.abs_spc; }
+      
 
   let offsets_of_mvars l = List.map ty_gvar_of_mvar l
                            |> List.filter (fun x -> x <> None)
@@ -5253,7 +5585,9 @@ end = struct
     | u :: tail -> u :: add_offsets_lv tail
 
   (* Prepare the caller for a function call. Returns the state with the
-     arguments es evaluated in f input variables. *)
+     arguments es evaluated in f input variables.
+     Remark: only possible for the standard semantics, as function calls have 
+     no speculative semantics. *)
   let aeval_f_args f es state =
     let f_decl = get_fun_def state.prog f |> oget in
 
@@ -5263,13 +5597,15 @@ end = struct
     let assigns = combine3 exp_in_tys f_args es
                   |> List.map (fun (x,y,z) -> (x, MLvar y, z)) in
 
-    let state = List.fold_left (fun state (in_ty, mvar, e) ->
-        abs_assign state in_ty mvar e)
-        state assigns in
+    let abs_std = List.fold_left (fun abs_std (in_ty, mvar, e) ->
+        AbsExprStd.abs_assign abs_std in_ty mvar e ) 
+        state.abs_std assigns in
 
-    state
+    { state with abs_std = abs_std }
 
-  (* Remark: handles variable initialization. *)
+  (* Remark: handles variable initialization. 
+     Remark: only possible for the standard semantics, as function calls have 
+     no speculative semantics. *)
   let aeval_f_return abs ret_assigns =
     List.fold_left (fun abs (out_ty,rvar,(lv,mlvo)) ->
         match mlvo with
@@ -5277,16 +5613,16 @@ end = struct
 
         | MLvars mlvs ->
           (* Here, we have no information on which elements are initialized. *)
-          AbsDom.forget_list abs mlvs
+          AbsDomStd.forget_list abs mlvs
 
         | MLvar mlv -> match ty_mvar mlv with
           | Bty Bool ->
             let rconstr = BVar (Bvar.make rvar true) in
-            AbsDom.assign_bexpr abs mlv rconstr
-            |> a_init_mlv_no_array mlvo
+            AbsDomStd.assign_bexpr abs mlv rconstr
+            |> AbsExprStd.a_init_mlv_no_array mlvo
 
           | Bty _ ->
-            let mret = Mtexpr.var (AbsDom.get_env abs) rvar in
+            let mret = Mtexpr.var (AbsDomStd.get_env abs) rvar in
 
             let lv_size = wsize_of_ty (ty_lval lv)
             and ret_size = wsize_of_ty out_ty in
@@ -5295,29 +5631,29 @@ end = struct
             let expr = match ty_mvar mlv, ty_mvar rvar with
               | Bty Int, Bty Int -> mret
               | Bty (U _), Bty Int ->
-                wrap_if_overflow abs mret Unsigned lv_size
+                AbsExprStd.wrap_if_overflow abs mret Unsigned lv_size
               | Bty (U _), Bty (U _) ->
-                cast_if_overflows abs lv_size ret_size mret
+                AbsExprStd.cast_if_overflows abs lv_size ret_size mret
               | _, _ -> assert false in
 
             let s_expr = sexpr_from_simple_expr expr in
-            let abs = AbsDom.assign_sexpr abs mlv s_expr in
+            let abs = AbsDomStd.assign_sexpr abs mlv s_expr in
 
             (* Points-to abstraction *)
             let ptr_expr = PtVars [rvar] in
-            let abs = AbsDom.assign_ptr_expr abs mlv ptr_expr in
+            let abs = AbsDomStd.assign_ptr_expr abs mlv ptr_expr in
 
             (* Offset abstraction *)
             let abs = match ty_gvar_of_mvar rvar with
               | None -> abs
               | Some rv ->
                 let lrv = L.mk_loc L._dummy rv in
-                aeval_offset abs out_ty mlv (Pvar lrv) in
+                AbsExprStd.aeval_offset abs out_ty mlv (Pvar lrv) in
 
-            a_init_mlv_no_array mlvo abs
+            AbsExprStd.a_init_mlv_no_array mlvo abs
 
           | Arr _ ->
-            let mret = Mtexpr.var (AbsDom.get_env abs) rvar in
+            let mret = Mtexpr.var (AbsDomStd.get_env abs) rvar in
 
             let lv_size = wsize_of_ty (ty_lval lv)
             and ret_size = wsize_of_ty out_ty in
@@ -5326,18 +5662,19 @@ end = struct
             (* Numerical abstractions only.
                Points-to and offset abstraction are not needed for array and 
                array elements *)
-            assign_arr_expr abs mlv mret)
+            AbsExprStd.assign_arr_expr abs mlv mret)
       
       abs ret_assigns
 
-
+  (* Remark: only possible for the standard semantics, as function calls have 
+   * no speculative semantics. *)
   let forget_f_vars f state =
     let f_decl = get_fun_def state.prog f |> oget in
     let f_vs = fun_args ~expand_arrays:true f_decl
                @ fun_locals ~expand_arrays:true f_decl in
 
     (* We remove f variables *)
-    { state with abs = AbsDom.remove_vars state.abs f_vs }
+    { state with abs_std = AbsDomStd.remove_vars state.abs_std f_vs }
 
   let forget_stack_vars state = match state.cstack with
     | [_] | [] -> state
@@ -5347,26 +5684,32 @@ end = struct
   (* Forget the values of all variables with have been modified by side-effect
      during a function call.
      Remark: we only log side effects on memory locations, hence we always
-     forget global variables. *)
+     forget global variables.
+     Remark: only possible for the standard semantics, as function calls have 
+     no speculative semantics. *)
   let forget_side_effect state s_effects =
     let vs_globs = prog_globals ~expand_arrays:true state.env
                    |> List.filter (function
                        | MmemRange pt -> List.mem pt s_effects
                        | _ -> true) in
-    {state with abs = AbsDom.forget_list state.abs vs_globs }
+    {state with abs_std = AbsDomStd.forget_list state.abs_std vs_globs }
 
-  (* Forget the values of memory locations that have *not* been modified. *)
+  (* Forget the values of memory locations that have *not* been modified. 
+     Remark: only possible for the standard semantics, as function calls have 
+     no speculative semantics. *)
   let forget_no_side_effect fstate s_effects =
     let nse_vs = get_mem_range fstate.env
                  |> List.filter (function
                      | MmemRange pt -> not (List.mem pt s_effects)
                      | _ -> true) in
-    { fstate with abs = AbsDom.forget_list fstate.abs nse_vs }
+    { fstate with abs_std = AbsDomStd.forget_list fstate.abs_std nse_vs }
 
   (* Prepare a function call. Returns the state where:
      - The arguments of f have been evaluated.
      - The variables of the caller's caller have been *removed*.
-     - s_effects is empty. *)
+     - s_effects is empty. 
+     Remark: only possible for the standard semantics, as function calls have 
+     no speculative semantics. *)
   let prepare_call state callsite f es =
     debug (fun () -> Format.eprintf "evaluating arguments ...@.");
     let state = aeval_f_args f es state in
@@ -5375,7 +5718,7 @@ end = struct
     let state = forget_stack_vars state in
 
     let state = { state with 
-                  abs = AbsDom.new_cnstr_blck state.abs callsite } in
+                  abs_std = AbsDomStd.new_cnstr_blck state.abs_std callsite } in
 
     { state with cstack = f :: state.cstack;
                  s_effects = [] }
@@ -5396,21 +5739,27 @@ end = struct
     let () = Prof.call sf (t' -. t) in
     r
 
-  let get_ret_assgns state f_decl lvs =
+  (* Remark: only possible for the standard semantics, as function calls have 
+   * no speculative semantics. *)
+  let get_ret_assgns abs_std f_decl lvs =
     let f_rets_no_offsets = fun_rets_no_offsets f_decl
     and out_tys = f_decl.f_tyout
-    and mlvs = List.map (fun x -> (x, mvar_of_lvar state.abs x)) lvs in
+    and mlvs = List.map (fun x -> 
+        (x, AbsExprStd.mvar_of_lvar abs_std x)) lvs in
 
     combine3 out_tys f_rets_no_offsets mlvs
 
 
+  (* Remark: only possible for the standard semantics, as function calls have 
+   * no speculative semantics. *)
   let return_call state callsite fstate lvs =
+    assert ((not state.spec_analysis) && (not fstate.spec_analysis));
     (* We forget side effects of f in the caller *)
     let state = forget_side_effect state fstate.s_effects in
 
     (* We pop the top-most block of constraints in the callee *)
     let fstate = { fstate with 
-                   abs = AbsDom.pop_cnstr_blck fstate.abs callsite } in
+                   abs_std = AbsDomStd.pop_cnstr_blck fstate.abs_std callsite } in
 
     (* We forget variables untouched by f in the callee *)
     let fstate = forget_no_side_effect fstate fstate.s_effects in
@@ -5421,7 +5770,11 @@ end = struct
           fname.fn_name
           (pp_list pp_mvar) (List.map (fun x -> MmemRange x) fstate.s_effects));
 
-    let state = { abs = AbsDom.meet state.abs fstate.abs;
+    let state = { abs_std = AbsDomStd.meet state.abs_std fstate.abs_std;
+                  abs_spc = state.abs_spc; (* in a standard semantics-only 
+                                              analysis, this value does not
+                                              matter. *)
+                  spec_analysis = false;
                   it = fstate.it;
                   env = state.env;
                   prog = state.prog;
@@ -5433,9 +5786,9 @@ end = struct
     debug(fun () -> Format.eprintf "evaluating returned values ...@.");
     (* Finally, we assign the returned values in the corresponding lvalues *)
     let f_decl = get_fun_def fstate.prog fname |> oget in
-    let r_assgns = get_ret_assgns state f_decl lvs in      
+    let r_assgns = get_ret_assgns state.abs_std f_decl lvs in      
     
-    let state = { state with abs = aeval_f_return state.abs r_assgns } in
+    let state = { state with abs_std = aeval_f_return state.abs_std r_assgns } in
 
     debug(fun () -> 
         Format.eprintf "forgetting %s local variables ...@.@." fname.fn_name);
@@ -5794,7 +6147,7 @@ end = struct
                           | Lnone _ -> raise Heuristic_failed
                           | _ -> assert false in
 
-                        let apr_env = AbsDom.get_env abs in
+                        let apr_env = AbsDomStd.get_env abs in
                         let heur = opn_heur apr_env opn reg_assgn in
                         Some (find_heur bv heur)
                       else None
@@ -5875,12 +6228,14 @@ end = struct
      fixed, and arrays in arguments must be fully initialized
      (i.e. cells must be initialized). *)
   let check_valid_call_top st f_decl = 
+    (* Function calls have no speculative semantics  *)
+    assert (not st.spec_analysis); 
     let cells_init = 
       List.for_all (fun v -> match mvar_of_var v with
           | Mvalue (Aarray _) as mv -> 
             let vs = u8_blast_var ~blast_arrays:true mv in
             List.for_all (function 
-                | Mvalue at -> AbsDom.check_init st.abs at
+                | Mvalue at -> AbsDomStd.check_init st.abs_std at
                 | _ -> assert false (* initialization of other arguments
                                        should already have been checked
                                        by the analyzer. *)
@@ -5894,59 +6249,63 @@ end = struct
   (* -------------------------------------------------------------------- *)
   let num_instr_evaluated = ref 0
 
-  let print_ginstr ginstr abs () =
+  let print_ginstr ~print_spc ginstr (std,spc) =
     Format.eprintf "@[<v>@[<v>%a@]@;*** %d Instr: %a %a@;@]%!"
-      (AbsDom.print ~full:true) abs
+      (AbsDom2.print ~print_spc:print_spc) (std,spc)
       (let a = !num_instr_evaluated in incr num_instr_evaluated; a)
       L.pp_sloc (fst ginstr.i_loc)
       (Printer.pp_instr ~debug:false) ginstr
 
-  let print_binop fmt (cpt_instr,abs1,abs2,abs3) =
+  let print_binop ~print_spc fmt (cpt_instr,abs1,abs2,abs3) =
     Format.fprintf fmt "@[<v 2>Of %d:@;%a@]@;\
                         @[<v 2>And %d:@;%a@]@;\
                         @[<v 2>Yield:@;%a@]"
       cpt_instr
-      (AbsDom.print ~full:true) abs1
+      (AbsDom2.print ~print_spc) abs1
       (!num_instr_evaluated - 1)
-      (AbsDom.print ~full:true) abs2
-      (AbsDom.print ~full:true) abs3
+      (AbsDom2.print ~print_spc) abs2
+      (AbsDom2.print ~print_spc) abs3
 
-  let print_if_join cpt_instr ginstr labs rabs abs_r () =
+  let print_if_join ~print_spc cpt_instr ginstr labs rabs abs_r =
     Format.eprintf "@;@[<v 2>If join %a for Instr:@;%a @;@;%a@]@."
       L.pp_sloc (fst ginstr.i_loc)
       (Printer.pp_instr ~debug:false) ginstr
-      print_binop (cpt_instr,
-                   labs,
-                   rabs,
-                   abs_r)
+      (print_binop ~print_spc) (cpt_instr,
+                             labs,
+                             rabs,
+                             abs_r)
 
-  let print_while_join cpt_instr abs abs_o abs_r () =
+  let print_while_join ~print_spc cpt_instr abs abs_o abs_r =
     Format.eprintf "@;@[<v 2>While Join:@;%a@]@."
-      print_binop (cpt_instr,
-                   abs,
-                   abs_o,
-                   abs_r)
+      (print_binop ~print_spc) (cpt_instr,
+                             abs,
+                             abs_o,
+                             abs_r)
 
-  let print_while_widening cpt_instr abs abs' abs_r () =
+  let print_while_widening ~print_spc cpt_instr abs abs' abs_r =
     Format.eprintf "@;@[<v 2>While Widening:@;%a@]@."
-      print_binop (cpt_instr,
-                   abs,
-                   abs',
-                   abs_r)
+      (print_binop ~print_spc) (cpt_instr,
+                             abs,
+                             abs',
+                             abs_r)
 
-  let print_return ginstr fabs fname () =
+  let print_return ~print_spc ginstr fabs fname =
     Format.eprintf "@[<v>@[<v>%a@]Returning %s (called line %a):@;@]%!"
-      (AbsDom.print ~full:true) fabs
+      (AbsDom2.print ~print_spc) fabs
       fname
       L.pp_sloc (fst ginstr.i_loc)
 
+  let std_spc state = (state.abs_std, state.abs_spc)
 
   let rec aeval_ginstr : ('ty,'info) ginstr -> astate -> astate =
     fun ginstr state ->
-      debug (print_ginstr ginstr state.abs);
+      debug (fun () ->
+        print_ginstr ~print_spc:state.spec_analysis ginstr (std_spc state));
 
       (* We stop if the abstract state is bottom *)
-      if AbsDom.is_bottom state.abs then state
+      if AbsDomStd.is_bottom state.abs_std &&
+         AbsDomSpc.is_bottom state.abs_spc 
+      then state
       else
         (* We check the safety conditions *)
         let conds = safe_instr ginstr in
@@ -5956,56 +6315,62 @@ end = struct
   and aeval_ginstr_aux : ('ty,'info) ginstr -> astate -> astate =
     fun ginstr state -> match ginstr.i_desc with
       | Cassgn (lv, _, _, e) ->
-        abs_assign state (ty_lval lv) (mvar_of_lvar state.abs lv) e
+        let abs_std = AbsExprStd.abs_assign
+            state.abs_std 
+            (ty_lval lv)
+            (AbsExprStd.mvar_of_lvar state.abs_std lv) 
+            e in
+        let abs_spc = AbsExprSpc.abs_assign
+            state.abs_spc 
+            (ty_lval lv)
+            (AbsExprSpc.mvar_of_lvar state.abs_spc lv) 
+            e in
+        { state with abs_std = abs_std; abs_spc = abs_spc; }
 
       | Copn (lvs,_,opn,es) ->
         (* Remark: the assignments must be done in the correct order. *)
         let assgns = split_opn (List.length lvs) opn es in
-        let state, mlvs_forget =
-          List.fold_left2 (fun (state, mlvs_forget) lv e_opt ->
-              match mvar_of_lvar state.abs lv, e_opt with
-              | MLnone,_ -> (state, mlvs_forget)
+        let abs_std = AbsExprStd.abs_assign_opn state.abs_std lvs assgns
+        and abs_spc = AbsExprSpc.abs_assign_opn state.abs_spc lvs assgns in
 
-              | MLvar mlv as cmlv, None ->
-                (* Remark: n-ary operation cannot return arrays. *)
-                let state = init_mlv_no_array cmlv state in
-                (state, mlv :: mlvs_forget)
-              | MLvar mlv, Some e ->
-                (abs_assign state (ty_lval lv) (MLvar mlv) e, mlvs_forget)
-
-              | MLvars mlvs, _ -> (state, mlvs @ mlvs_forget))
-            (state,[]) lvs assgns in
-
-        let mlvs_forget = List.sort_uniq Stdlib.compare mlvs_forget in
-
-        { state with abs = AbsDom.forget_list state.abs mlvs_forget }
+        { state with abs_std = abs_std; abs_spc = abs_spc; }
 
       | Cif(e,c1,c2) ->
+        (* This is only for the standard semantics.
+           In the speculative semantics, the wrong branch may be executed. *)
         let eval_cond state = function
-          | Some ec -> AbsDom.meet_btcons state.abs ec
-          | None -> state.abs in
-        let oec = bexpr_to_btcons e state.abs in
+          | Some ec -> AbsDomStd.meet_btcons state.abs_std ec
+          | None -> state.abs_std in
+        let oec = AbsExprStd.bexpr_to_btcons e state.abs_std in
 
-        let labs, rabs =
+        let labs_std, rabs_std =
           if Aparam.if_disj && is_some (simpl_obtcons oec) then
             let ec = simpl_obtcons oec |> oget in
-            AbsDom.add_cnstr state.abs ec (fst ginstr.i_loc)
+            AbsDomStd.add_cnstr state.abs_std ec (fst ginstr.i_loc)
           else
             let noec = obind flip_btcons oec in
             ( eval_cond state oec, eval_cond state noec ) in
 
-        let lstate = aeval_gstmt c1 { state with abs = labs } in
+        let lstate = aeval_gstmt c1 { state with abs_std = labs_std } in
 
         let cpt_instr = !num_instr_evaluated - 1 in
 
         (* We abstractly evaluate the right branch
            Be careful the start from lstate, as we need to use the
            updated abstract iterator. *)
-        let rstate = aeval_gstmt c2 { lstate with abs = rabs } in
+        let rstate = aeval_gstmt c2 { lstate with abs_std = rabs_std;
+                                                  abs_spc = state.abs_spc; } in
 
-        let abs_res = AbsDom.join lstate.abs rstate.abs in
-        debug (print_if_join cpt_instr ginstr lstate.abs rstate.abs abs_res);
-        { rstate with abs = abs_res }
+        let abs_res_std = AbsDomStd.join lstate.abs_std rstate.abs_std in
+        let abs_res_spc = AbsDomSpc.join lstate.abs_spc rstate.abs_spc in
+        debug (fun () ->
+            print_if_join ~print_spc:state.spec_analysis 
+              cpt_instr ginstr 
+              (std_spc lstate) 
+              (std_spc rstate)
+              (abs_res_std, abs_res_spc));
+        { rstate with abs_std = abs_res_std;
+                      abs_spc = abs_res_spc; }
 
       | Cwhile(_,c1, e, c2) ->
         let prog_pt = fst ginstr.i_loc in
@@ -6017,25 +6382,29 @@ end = struct
         let conds = safe_e e in
         let state = check_safety state (InProg prog_pt) conds in
 
-        (* Given an abstract state, compute the loop condition expression. *)
-        let oec abs = bexpr_to_btcons e abs in
+        (* Given an abstract state, compute the loop condition expression. 
+           Only useful for the standard semantics. *)
+        let oec abs = AbsExprStd.bexpr_to_btcons e abs in
 
         (* Candidate decreasing quantity *)
         let ni_e =
-          try Some (dec_qnty_heuristic state.abs (c2 @ c1) (oec state.abs))
+          try Some (dec_qnty_heuristic 
+                      state.abs_std (c2 @ c1) 
+                      (oec state.abs_std))
           with Heuristic_failed -> None in
         (* Variable where we store its value before executing the loop body. *)
         let mvar_ni = MNumInv prog_pt in
 
         (* We check that if the loop does not exit, then ni_e decreased by
-             at least one *)
+             at least one. 
+           Only for the standard semantics. *)
         let check_ni_dec state = match ni_e with
             | None -> (* Here, we cannot prove termination *)
-              let violation = (InProg prog_pt, Termination) in
+              let violation = (InProg prog_pt, StdSem, Termination) in
               add_violations state [violation]
 
             | Some nie ->
-              let env = AbsDom.get_env state.abs in
+              let env = AbsDomStd.get_env state.abs_std in
               let nie = Mtexpr.extend_environment nie env in
 
               (* (initial nie) - nie *)
@@ -6043,18 +6412,20 @@ end = struct
 
               (* We assume the loop does not exit, and check whether the 
                  candidate decreasing quantity indeed decreased. *)
-              let state_in = match oec state.abs with
+              let state_in = match oec state.abs_std with
                 | Some ec -> 
-                  { state with abs = AbsDom.meet_btcons state.abs ec }
+                  { state with 
+                    abs_std = AbsDomStd.meet_btcons state.abs_std ec }
                 | None -> state in
 
               debug(fun () -> 
                   Format.eprintf "@[<v 2>Checking the numerical quantity in:@;\
                                   %a@]@."
-                    (AbsDom.print ~full:true) state_in.abs);
+                    (AbsDom2.print ~print_spc:false) (* only std semantics *)
+                    (std_spc state_in));
 
-              let int = AbsDom.bound_texpr state_in.abs e
-              and zint = AbsDom.bound_variable state_in.abs mvar_ni
+              let int = AbsDomStd.bound_texpr state_in.abs_std e
+              and zint = AbsDomStd.bound_variable state_in.abs_std mvar_ni
               and test_intz =
                 Interval.of_scalar (Scalar.of_int 0) (Scalar.of_infty 1)
               and test_into =
@@ -6071,7 +6442,7 @@ end = struct
               if (Interval.is_leq int test_into) &&
                  (Interval.is_leq zint test_intz) then state
               else
-                let violation = (InProg prog_pt, Termination) in
+                let violation = (InProg prog_pt, StdSem, Termination) in
                 add_violations state [violation] in
 
 
@@ -6079,9 +6450,11 @@ end = struct
         let eval_body state_i state =
           let cpt_instr = !num_instr_evaluated - 1 in
 
-          (* We add a disjunctive constraint block *)
+          (* We add a disjunctive constraint block for the standard semantics *)
           let state_i = { state_i with
-                          abs = AbsDom.new_cnstr_blck state_i.abs prog_pt } in
+                          abs_std = 
+                            AbsDomStd.new_cnstr_blck
+                              state_i.abs_std prog_pt } in
 
           let state_o = aeval_gstmt (c2 @ c1) state_i in
 
@@ -6090,25 +6463,39 @@ end = struct
           let state_o = check_ni_dec state_o in
 
           (* We forget the variable storing the initial value of the 
-             candidate decreasing quantity *)
+             candidate decreasing quantity.
+             The speculative semantics abstraction domain does not 
+             include this variable. *)
           let state_o = { state_o with 
-                          abs = AbsDom.forget_list state_o.abs [mvar_ni] } in
+                          abs_std = 
+                            AbsDomStd.forget_list
+                              state_o.abs_std [mvar_ni] } in
 
-          (* We pop the disjunctive constraint block *)
+          (* We pop the disjunctive constraint block for the standard 
+             semantics *)
           let state_o = { state_o with
-                          abs = AbsDom.pop_cnstr_blck state_o.abs prog_pt } in
+                          abs_std = 
+                            AbsDomStd.pop_cnstr_blck 
+                              state_o.abs_std prog_pt } in
 
-          let abs_r = AbsDom.join state.abs state_o.abs in
-          debug (print_while_join cpt_instr state.abs state_o.abs abs_r);
-          { state_o with abs = abs_r } in
+          let abs_r_std = AbsDomStd.join state.abs_std state_o.abs_std in
+          let abs_r_spc = AbsDomSpc.join state.abs_spc state_o.abs_spc in
+          debug (fun () ->
+              print_while_join ~print_spc:state.spec_analysis
+                cpt_instr 
+                (std_spc state)
+                (std_spc  state_o) 
+                (abs_r_std,abs_r_spc));
+          { state_o with abs_std = abs_r_std; 
+                         abs_spc = abs_r_spc;} in
 
         let enter_loop state =
           debug (fun () -> Format.eprintf "Loop %d@;" !cpt);
           cpt := !cpt + 1;
-          let state = match oec state.abs with
+          let state = match oec state.abs_std with
             | Some ec ->
               debug (fun () -> Format.eprintf "Meet with %a@;" pp_btcons ec);
-              { state with abs = AbsDom.meet_btcons state.abs ec }
+              { state with abs_std = AbsDomStd.meet_btcons state.abs_std ec }
             | None ->
               debug (fun () -> Format.eprintf "No meet");
               state in
@@ -6120,11 +6507,13 @@ end = struct
                 (pp_opt Mtexpr.print) ni_e);
 
           (* We evaluate the initial value of the candidate decreasing
-             quantity. *)
+             quantity. 
+             Only for the standard semantics. *)
           match ni_e with
             | None -> state
             | Some nie ->
-              { state with abs = AbsDom.assign_sexpr state.abs
+              { state with 
+                abs_std = AbsDomStd.assign_sexpr state.abs_std
                                  mvar_ni
                                  (sexpr_from_simple_expr nie) } in
 
@@ -6137,13 +6526,14 @@ end = struct
 
         let is_stable state pre_state =
           (pre_state <> None) &&
-          (AbsDom.is_included state.abs (oget pre_state).abs) in
+          (AbsDomStd.is_included state.abs_std (oget pre_state).abs_std) &&
+          (AbsDomSpc.is_included state.abs_spc (oget pre_state).abs_spc) in
 
         let exit_loop state =
           debug (fun () -> Format.eprintf "Exit loop@;");
-          match obind flip_btcons (oec state.abs) with
+          match obind flip_btcons (oec state.abs_std) with
           | Some neg_ec ->
-            { state with abs = AbsDom.meet_btcons state.abs neg_ec }
+            { state with abs_std = AbsDomStd.meet_btcons state.abs_std neg_ec }
           | None -> state in
 
         (* Simple heuristic for the widening threshold.
@@ -6158,12 +6548,23 @@ end = struct
           else
             let cpt_instr = !num_instr_evaluated - 1 in
             let state' = unroll_once state in
-            let w_abs =
-              AbsDom.widening
-                (smpl_thrs state.abs) (* this is used as a threshold *)
-                state.abs state'.abs in
-            debug(print_while_widening cpt_instr state.abs state'.abs w_abs);
-            stabilize { state' with abs = w_abs } (Some state) in
+            let w_abs_std =
+              AbsDomStd.widening
+                (smpl_thrs state.abs_std) (* this is used as a threshold *)
+                state.abs_std state'.abs_std in
+            let w_abs_spc =
+              AbsDomSpc.widening
+                None            (* no threshold here from the loop condition
+                                   for the speculative semantics *)
+                state.abs_spc state'.abs_spc in
+            debug(fun () ->
+                print_while_widening ~print_spc:state.spec_analysis
+                  cpt_instr
+                  (std_spc state)
+                  (std_spc state')
+                  (w_abs_std,w_abs_spc));
+            stabilize { state' with abs_std = w_abs_std;
+                                    abs_spc = w_abs_spc; } (Some state) in
 
         let rec stabilize_b state_i pre_state =
           let cpt_i = !num_instr_evaluated - 1 in
@@ -6173,12 +6574,23 @@ end = struct
           else
             let state_i' = enter_loop state in
 
-            let w_abs =
-              AbsDom.widening
-                (smpl_thrs state_i.abs) (* this is used as a threshold *)
-                state_i.abs state_i'.abs in
-            debug(print_while_widening cpt_i state_i.abs state_i'.abs w_abs);
-            stabilize_b { state_i' with abs = w_abs } state in
+            let w_abs_std =
+              AbsDomStd.widening
+                (smpl_thrs state_i.abs_std) (* this is used as a threshold *)
+                state_i.abs_std state_i'.abs_std in
+            let w_abs_spc =
+              AbsDomSpc.widening
+                None            (* no threshold here from the loop condition
+                                   for the speculative semantics *)
+                state_i.abs_spc state_i'.abs_spc in
+            debug(fun () ->
+                print_while_widening ~print_spc:state.spec_analysis
+                  cpt_i
+                  (std_spc state_i)
+                  (std_spc state_i')
+                  (w_abs_std, w_abs_spc));
+            stabilize_b { state_i' with abs_std = w_abs_std; 
+                                        abs_spc = w_abs_spc;} state in
 
         (* We first unroll the loop k_unroll times. We then stabilize the
            abstraction (in finite time) using AbsDom.widening.
@@ -6190,6 +6602,7 @@ end = struct
 
 
       | Ccall(_, lvs, f, es) ->
+        assert (not state.spec_analysis);
         let f_decl = get_fun_def state.prog f |> oget in
         let fn = f_decl.f_name in
 
@@ -6204,15 +6617,42 @@ end = struct
         let conds = safe_return f_decl in
         let fstate = check_safety fstate (InReturn fn) conds in
 
-        debug(print_return ginstr fstate.abs fn.fn_name);
+        debug(fun () ->
+            print_return ~print_spc:state.spec_analysis
+              ginstr (std_spc fstate) fn.fn_name);
 
         return_call state callsite fstate lvs
 
       | Cfor(i, (d,e1,e2), c) ->
         let prog_pt = fst ginstr.i_loc in
 
-        match aeval_cst_int state.abs e1, aeval_cst_int state.abs e2 with
+        let check_spec_bounds z1 z2 =
+          if state.spec_analysis then 
+            match AbsExprSpc.aeval_cst_int state.abs_spc e1, 
+                  AbsExprSpc.aeval_cst_int state.abs_spc e2 with
+            | Some z1', Some z2' ->
+              if z1' = z1 && z2' = z2
+              then () 
+              else begin
+                Format.eprintf "@[<v>Error: for loop bounds for the standard \
+                                and speculative semantics are different:@;\
+                                std:%d and spec:%d@;std:%d and spec:%d@]"
+                  z1 z1 z2 z2';
+                assert false
+              end
+            | _ ->
+              Format.eprintf "@[<v>For loop (speculative semantics): \
+                              I was expecting a constant integer expression.@;\
+                              Expr1:@[%a@]@;Expr2:@[%a@]@;@."
+                (Printer.pp_expr ~debug:true) e1
+                (Printer.pp_expr ~debug:true) e2;
+              assert false in
+
+
+        match AbsExprStd.aeval_cst_int state.abs_std e1, 
+              AbsExprStd.aeval_cst_int state.abs_std e2 with
         | Some z1, Some z2 ->
+          check_spec_bounds z1 z2;
           if z1 = z2 then state else
             let init_i, final_i, op = match d with
               | UpTo -> assert (z1 < z2); (z1, z2 - 1, fun x -> x + 1)
@@ -6222,26 +6662,39 @@ end = struct
               if i = f then [i] else i :: mk_range (op i) f op in
 
             let range = mk_range init_i final_i op
-            and mvari = Mvalue (Avar (L.unloc i))
-            and apr_env = AbsDom.get_env state.abs in
+            and mvari = Mvalue (Avar (L.unloc i)) in
+            let apr_env_std = AbsDomStd.get_env state.abs_std 
+            and apr_env_spc = AbsDomSpc.get_env state.abs_spc in 
 
             List.fold_left ( fun state ci ->
-                (* We add a disjunctive constraint block *)
-                let state =
-                  { state with 
-                    abs = AbsDom.new_cnstr_blck state.abs prog_pt } in
+                (* We add a disjunctive constraint block for the standard
+                   semantics abstraction. *)
+                let std = AbsDomStd.new_cnstr_blck state.abs_std prog_pt in
+                let state = { state with abs_std = std } in
 
                 (* We set the integer variable i to ci. *)
-                let expr_ci = Mtexpr.cst apr_env (Coeff.s_of_int ci)
-                              |> sexpr_from_simple_expr in
-                let abs = AbsDom.assign_sexpr state.abs mvari expr_ci in
+                let expr_ci_std = Mtexpr.cst apr_env_std (Coeff.s_of_int ci)
+                                  |> sexpr_from_simple_expr in
+                let abs_std = 
+                  AbsDomStd.assign_sexpr state.abs_std mvari expr_ci_std in
+
+                let expr_ci_spc = Mtexpr.cst apr_env_spc (Coeff.s_of_int ci)
+                                  |> sexpr_from_simple_expr in
+                let abs_spc = 
+                  AbsDomSpc.assign_sexpr state.abs_spc mvari expr_ci_spc in
+
+                (* TODO: should we keep initialization for speculative 
+                   semantics ?*)
                 let state =
                   { state with
-                    abs = AbsDom.is_init abs (Avar (L.unloc i)) }
+                    abs_std = AbsDomStd.is_init abs_std (Avar (L.unloc i));
+                    abs_spc = AbsDomSpc.is_init abs_spc (Avar (L.unloc i)); }
                   |> aeval_gstmt c in
 
-                (* We pop the disjunctive constraint block *)
-                { state with abs = AbsDom.pop_cnstr_blck state.abs prog_pt }
+                (* We pop the disjunctive constraint block for the standard
+                   semantics abstraction. *)
+                { state with
+                  abs_std = AbsDomStd.pop_cnstr_blck state.abs_std prog_pt }
               ) state range
 
         | _ ->
@@ -6254,6 +6707,7 @@ end = struct
 
   and aeval_call : funname -> unit func -> L.t -> astate -> astate =
     fun f f_decl callsite st_in ->
+    assert (not st_in.spec_analysis);
     let itk = ItFunIn (f,callsite) in
 
     match aeval_call_strategy callsite f_decl st_in with 
@@ -6267,9 +6721,9 @@ end = struct
       (* f has been abstractly evaluated at this callsite before *)
       if ItMap.mem itk st_in.it then 
         let fabs = ItMap.find itk st_in.it in
-        match FAbs.apply st_in.abs fabs with
+        match FAbs.apply st_in.abs_std fabs with
         | Some (f_abs_out, f_effects) ->
-          { st_in with abs = f_abs_out;
+          { st_in with abs_std = f_abs_out;
                        s_effects = f_effects; } 
 
         | None -> assert false    (* that should not be possible *)
@@ -6282,27 +6736,30 @@ end = struct
         let st_in_ndisj = 
           let mvars = List.map mvar_of_var f_decl.f_args
                       |> u8_blast_vars ~blast_arrays:true in
-          let abs = AbsDom.top_ni st_in.abs in
+          let abs = AbsDomStd.top_ni st_in.abs_std in
           let abs = List.fold_left (fun abs mv -> match mv with
-              | Mvalue at -> AbsDom.is_init abs at
+              | Mvalue at -> AbsDomStd.is_init abs at
               | _ -> assert false
             ) abs mvars in
           
-          { st_in with abs = abs } 
+          { st_in with abs_std = abs } 
         in
 
         let st_out_ndisj = aeval_body f_decl.f_body st_in_ndisj in
 
         (* We make a new function abstraction for f. Roughly, it is of the form:
            input |--> (output,effects) *)
-        let fabs = 
-          FAbs.make st_in_ndisj.abs st_out_ndisj.abs st_out_ndisj.s_effects in
+        let fabs = FAbs.make 
+            st_in_ndisj.abs_std
+            st_out_ndisj.abs_std
+            st_out_ndisj.s_effects in
 
         let st_out_ndisj = { st_out_ndisj with
                              it = ItMap.add itk fabs st_out_ndisj.it } in
 
         (* It remains to add the disjunctions of the call_site to st_out *)
-        { st_out_ndisj with abs = AbsDom.to_shape st_out_ndisj.abs st_in.abs }
+        { st_out_ndisj with 
+          abs_std = AbsDomStd.to_shape st_out_ndisj.abs_std st_in.abs_std }
 
   and aeval_body f_body state =
     debug (fun () -> Format.eprintf "Evaluating the body ...@.@.");
@@ -6316,7 +6773,8 @@ end = struct
       let () = debug (fun () ->
           if gstmt <> [] then
             Format.eprintf "%a%!"
-              (AbsDom.print ~full:true) state.abs) in
+              (AbsDom2.print ~print_spc:state.spec_analysis) 
+              (std_spc state)) in
       state
 
   (* Select the call strategy for [f_decl] in [st_in] *)
@@ -6352,13 +6810,20 @@ end = struct
   let print_mem_ranges state =
     debug(fun () -> Format.eprintf
              "@[<v 0>@;Final offsets full abstract value:@;@[%a@]@]@."
-             (AbsDom.print ~full:true) state.abs)
+             (AbsDom2.print ~print_spc:state.spec_analysis) 
+             (std_spc state))
 
-  let print_var_interval state fmt mvar =
-    let int = AbsDom.bound_variable state.abs mvar in
+  let print_var_interval_std state fmt mvar =
+    let int_std = AbsDomStd.bound_variable state.abs_std mvar in
     Format.fprintf fmt "@[%a: %a@]"
       pp_mvar mvar
-      Interval.print int
+      Interval.print int_std
+
+  let print_var_interval_spc state fmt mvar =
+    let int_spc = AbsDomSpc.bound_variable state.abs_spc mvar in
+    Format.fprintf fmt "@[%a: %a@]"
+      pp_mvar mvar
+      Interval.print int_spc
 
   let mem_ranges_printer state f_decl fmt () =
     let in_vars = fun_in_args_no_offset f_decl
@@ -6370,16 +6835,22 @@ end = struct
         if (List.mem v vars_to_keep) then acc else v :: acc )
         [] vars in
 
-    let abs_proj = 
-      AbsDom.pop_cnstr_blck
-        (AbsDom.forget_list state.abs rem_vars) 
+    let abs_proj_std = 
+      AbsDomStd.pop_cnstr_blck
+        (AbsDomStd.forget_list state.abs_std rem_vars) 
+        L._dummy                (* We use L._dummy for the initial block *)
+    in
+    let abs_proj_spc = 
+      AbsDomSpc.pop_cnstr_blck
+        (AbsDomSpc.forget_list state.abs_spc rem_vars) 
         L._dummy                (* We use L._dummy for the initial block *)
     in
 
     let sb = !only_rel_print in (* Not very clean *)
     only_rel_print := true;
     Format.fprintf fmt "@[%a@]"
-      (AbsDom.print ~full:true) abs_proj;
+      (AbsDom2.print ~print_spc:state.spec_analysis)
+      (abs_proj_std, abs_proj_spc);
     only_rel_print := sb
 
 
@@ -6415,7 +6886,8 @@ end = struct
 
       ( final_st.violations,
         mem_ranges_printer final_st main_decl,
-        print_var_interval final_st )
+        print_var_interval_std final_st,
+        print_var_interval_spc final_st )
     with
     | Manager.Error _ as e -> hndl_apr_exc e
 end
@@ -6486,13 +6958,21 @@ module AbsAnalyzer (EW : ExportWrap) = struct
 
     match l_res with
     | [] -> raise (Failure "-safetyparam ill-formed (empty list of params)")
-    | (violations, _, print_mvar_interval) :: _->
-      Format.eprintf "@.@[<v>%a@;@;\
-                      @[<v 2>Memory ranges:@;%a@]@;\
+    | (violations, _, print_mvar_interval_std, print_mvar_interval_spc) :: _->
+      let pp_mem_range fmt = match npt with
+        | [] -> Format.fprintf fmt ""
+        | _ ->
+      Format.eprintf "@[<v 2>Memory ranges (standard semantics):@;%a@]@;\
+                      @[<v 2>Memory ranges (speculative semantics):@;%a@]@;"
+        (pp_list print_mvar_interval_std) npt
+        (pp_list print_mvar_interval_spc) npt in
+
+      Format.eprintf "@.@[<v>%a@;\
+                      %t\
                       %a@]@."
         pp_violations violations
-        (pp_list print_mvar_interval) npt
-        (pp_list (fun fmt (_,f,_) -> f fmt ())) l_res;
+        pp_mem_range
+        (pp_list (fun fmt (_,f,_,_) -> f fmt ())) l_res;
 
       if violations <> [] then begin
         Format.eprintf "@[<v>Program is not safe!@;@]@.";
