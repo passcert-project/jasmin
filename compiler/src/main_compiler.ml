@@ -302,7 +302,8 @@ let main () =
       Conv.string0_of_string x in
 
     let pp_cprog s cp =
-      if s = Compiler.LowerInstruction && !check_safety then begin
+      if s = Compiler.RemoveArrInit && !check_safety then begin
+        let p = Conv.prog_of_cprog tbl cp in
         let () =
           List.iter (fun f_decl ->
               if f_decl.f_cc = Export then
@@ -311,11 +312,11 @@ let main () =
 
                 let module AbsInt = Safety.AbsAnalyzer(struct
                     let main = f_decl
-                    let prog = prog
+                    let prog = p
                   end) in
 
                 AbsInt.analyze ())
-            (snd prog) in
+            (snd p) in
         exit 0;
       end
       else
