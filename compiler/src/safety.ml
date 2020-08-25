@@ -876,23 +876,12 @@ end = struct
   type t = { mexpr : mexpr;
              env : apr_env } 
 
-  (* Return sum_{j = 0}^{len - 1} (2^8)^(len - 1 - j) * (U8)v[offset + j] *)
-  let rec build_term_array v offset len =
-    let tv =
-      Texpr1.Var (avar_of_mvar (Mvalue (AarrayEl (v,U8,offset + len - 1)))) in
-    let ptwo = Texpr1.Cst (Coeff.s_of_mpqf (mpq_pow (8 * (len - 1)))) in
-    let t = Texpr1.Binop (Texpr1.Mul, ptwo, tv, Texpr1.Int, Aparam.round_typ) in
-    if len = 1 then tv
-    else Texpr1.Binop (Texpr1.Add,
-                       t,
-                       build_term_array v offset (len - 1),
-                       Texpr1.Int, Aparam.round_typ)
-
   let rec e_aux = function
     | Mcst c -> Texpr1.Cst c
     | Mvar mvar -> begin match mvar with
-        | Mvalue (AarrayEl (v,ws,i)) ->
-          build_term_array v (((int_of_ws ws) / 8) * i) ((int_of_ws ws) / 8)
+        | Mvalue (AarrayEl (_,ws,_)) ->
+          assert (ws = U8);
+          Texpr1.Var (avar_of_mvar mvar)
         | _ -> Texpr1.Var (avar_of_mvar mvar) end
     | Munop (op1, a, t, r) -> Texpr1.Unop (op1, e_aux a, t, r)
     | Mbinop (op2, a, b, t, r) -> Texpr1.Binop (op2, e_aux a, e_aux b, t, r)
@@ -903,9 +892,26 @@ end = struct
 
   let print_mexpr ppf t = e_aux t |> Texpr1.print_expr ppf
 
+  (* Return sum_{j = 0}^{len - 1} (2^8)^(len - 1 - j) * (U8)v[offset + j] *)
+  let rec build_term_array v offset len =
+    let tv =
+      Mvar (Mvalue (AarrayEl (v,U8,offset + len - 1))) in
+    let ptwo = Mcst (Coeff.s_of_mpqf (mpq_pow (8 * (len - 1)))) in
+    let t = Mbinop (Texpr1.Mul, ptwo, tv, Texpr1.Int, Aparam.round_typ) in
+    if len = 1 then tv
+    else Mbinop (Texpr1.Add,
+                 t,
+                 build_term_array v offset (len - 1),
+                 Texpr1.Int, Aparam.round_typ)
+
   let cst env c = { mexpr = Mcst c; env = env }
 
-  let var env v = { mexpr = Mvar v; env = env }
+  let var env v = 
+    let mexpr = match v with
+      | Mvalue (AarrayEl (v,ws,i)) ->
+        build_term_array v (((int_of_ws ws) / 8) * i) ((int_of_ws ws) / 8)
+      | _ -> Mvar v in
+    { mexpr = mexpr; env = env }
 
   let unop op1 a = { a with
                      mexpr = Munop (op1, a.mexpr, Texpr1.Int, Aparam.round_typ) }
@@ -1598,7 +1604,7 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
           let map,mexpr = Mtexpr.weak_transf (is_spec ()) map e.mexpr in
 
           (* We prepare the expression *)
-          let env = prepare_env (Abstract1.env a) e.mexpr in
+          let env = prepare_env (Abstract1.env a) mexpr in
           let ae = Mtexpr.to_aexpr { Mtexpr.mexpr = mexpr;
                                      Mtexpr.env = env } in
           let c = Tcons1.make ae (Mtcons.get_typ c) in
