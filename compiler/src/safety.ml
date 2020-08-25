@@ -6427,7 +6427,10 @@ end = struct
         (* We check that if the loop does not exit, then ni_e decreased by
              at least one. 
            Only for the standard semantics. *)
-        let check_ni_dec state = match ni_e with
+        let check_ni_dec state = 
+          if AbsDomStd.is_bottom state.abs_std then state
+          else
+            match ni_e with
             | None -> (* Here, we cannot prove termination *)
               let violation = (InProg prog_pt, StdSem, Termination) in
               add_violations state [violation]
