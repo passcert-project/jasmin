@@ -303,7 +303,14 @@ let main () =
 
     let pp_cprog s cp =
       if s = Compiler.RemoveArrInit && !check_safety then begin
+      (* if s = Compiler.RegArrayExpansion && !check_safety then begin *)
         let p = Conv.prog_of_cprog tbl cp in
+        let s1,s2 = Glob_options.print_strings s in
+        Format.eprintf "@[<v>At compilation pass: %s@;%s@;@;\
+                        %a@;@]@."
+          s1 s2
+          (Printer.pp_prog ~debug:true) p;
+
         let () =
           List.iter (fun f_decl ->
               if f_decl.f_cc = Export then

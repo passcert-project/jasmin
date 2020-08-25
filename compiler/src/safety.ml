@@ -4225,8 +4225,17 @@ let add64 x e = Papp2 (E.Oadd ( E.Op_w U64), Pvar x, e)
 
 let in_bound x ws e =
   match (L.unloc x).v_ty with
-  | Arr(ws',n) -> InBound(n * int_of_ws ws' / 8, ws, e)
+  | Arr(ws',n) -> [InBound(n * int_of_ws ws' / 8, ws, e)]
+  | Bty (U _)-> []                   (* TODO: check this *)
   | _ -> assert false
+
+
+let init_get x ws e =
+  match (L.unloc x).v_ty with
+  | Arr _ -> [Initai(L.unloc x, ws, e)]
+  | Bty (U _)-> [Initv (L.unloc x)] (* TODO: check this *)
+  | _ -> assert false
+
 
 let safe_op2 e2 = function
   | E.Oand | E.Oor | E.Oadd _ | E.Omul _ | E.Osub _
@@ -4251,7 +4260,7 @@ let rec safe_e_rec safe = function
   | Pvar x -> safe_var x @ safe
 
   | Pload (ws,x,e) -> Valid (ws, L.unloc x, e) :: safe_e_rec safe e
-  | Pget (ws, x, e) -> in_bound x ws e :: Initai(L.unloc x, ws, e) :: safe
+  | Pget (ws, x, e) -> (in_bound x ws e) @ (init_get x ws e) @ safe
   | Papp1 (_, e) -> safe_e_rec safe e
   | Papp2 (op, e1, e2) -> safe_op2 e2 op @ safe_e_rec (safe_e_rec safe e1) e2
   | PappN (E.Opack _,_) -> safe
@@ -4268,7 +4277,7 @@ let safe_es = List.fold_left safe_e_rec []
 let safe_lval = function
   | Lnone _ | Lvar _ -> []
   | Lmem(ws, x, e) -> Valid (ws, L.unloc x, e) :: safe_e_rec [] e
-  | Laset(ws,x,e) -> in_bound x ws e :: safe_e_rec [] e
+  | Laset(ws,x,e) -> (in_bound x ws e) @ safe_e_rec [] e
 
 let safe_lvals = List.fold_left (fun safe x -> safe_lval x @ safe) []
 
