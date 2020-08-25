@@ -150,15 +150,17 @@ end = struct
       f_ret = List.map (mk_v_loc f_decl.f_name.fn_name) f_decl.f_ret }
 
   and mk_v fn v =
-    if Hashtbl.mem htv (v.v_name, fn) then
-      Hashtbl.find htv (v.v_name, fn)
+    let short_name v = v.v_name ^ "." ^ (string_of_int (int_of_uid v.v_id)) in
+
+    if Hashtbl.mem htv (short_name v, fn) then
+      Hashtbl.find htv (short_name v, fn)
     else if Hashtbl.mem ht_uniq v.v_name then
-      let nv = V.mk (v.v_name ^ "#" ^ fn) v.v_kind v.v_ty v.v_dloc in
-      let () = Hashtbl.add htv (v.v_name, fn) nv in
+      let nv = V.mk ((short_name v) ^ "#" ^ fn) v.v_kind v.v_ty v.v_dloc in
+      let () = Hashtbl.add htv (short_name v, fn) nv in
       nv
     else
       let () = Hashtbl.add ht_uniq v.v_name () in
-      let () = Hashtbl.add htv (v.v_name, fn) v in
+      let () = Hashtbl.add htv (short_name v, fn) v in
       v
 
   and mk_v_loc fn v = L.mk_loc (L.loc v) (mk_v fn (L.unloc v))
