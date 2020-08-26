@@ -6342,7 +6342,7 @@ end = struct
         aeval_ginstr_aux ginstr state
 
   and aeval_ginstr_aux : ('ty,'info) ginstr -> astate -> astate =
-    fun ginstr state -> match ginstr.i_desc with
+    fun ginstr state -> match ginstr.i_desc with 
       | Cassgn (lv, _, _, e) ->
         let abs_std = AbsExprStd.abs_assign
             state.abs_std 
@@ -6356,6 +6356,11 @@ end = struct
             e in
         { state with abs_std = abs_std; abs_spc = abs_spc; }
 
+      | Copn(lvs, _, Expr.Ox86 (X86_instr_decl.LFENCE), es) ->
+        assert (lvs = [] && es = []);
+        let abs_scp = std_to_spc state.abs_std in
+        { state with abs_spc = abs_scp };
+        
       | Copn (lvs,_,opn,es) ->
         (* Remark: the assignments must be done in the correct order. *)
         let assgns = split_opn (List.length lvs) opn es in

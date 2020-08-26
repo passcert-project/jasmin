@@ -17,6 +17,8 @@ let lea = ref false
 let set0 = ref false
 let model = ref Normal
 
+let sct = ref None
+
 let set_coqonly s =
   coqfile := s;
   coqonly := true
@@ -56,6 +58,10 @@ let set_safety () = model := Safety
 let set_checksafety () = check_safety := true
 
 let set_safetyparam s = safety_param := Some s
+
+let set_v1 () = sct := Some Sct_checker.V1
+let set_v4 () = sct := Some Sct_checker.V4
+let set_v4_weak () = sct := Some Sct_checker.V4_weak
 
 let print_strings = function
   | Compiler.Typing                      -> "typing"   , "typing"
@@ -97,6 +103,9 @@ let options = [
     "-ec"       , Arg.String  set_ec    , "[f]: extract function [f] and its dependencies to an easycrypt file";
     "-oec"     ,  Arg.Set_string ecfile , "[filename]: use filename as output destination for easycrypt extraction";
     "-CT" , Arg.Unit set_constTime      , ": generates model for constant time verification";
+    "-v1", Arg.Unit set_v1              , ": check sct for v1";
+    "-v4", Arg.Unit set_v4              , ": check sct for v4";
+    "-v4_weak", Arg.Unit set_v4_weak    , ": check sct for v4 weaker version";
     "-safety", Arg.Unit set_safety      , ": generates model for safety verification";
     "-checksafety", Arg.Unit set_checksafety, ": automatically check for safety";
     "-safetyparam", Arg.String set_safetyparam,
@@ -114,10 +123,15 @@ let usage_msg = "Usage : jasminc [option] filename"
 
 
 (* -------------------------------------------------------------------- *)
-let eprint step pp_prog p =
-  if List.mem step !print_list then
+
+let eprint_msg step pp_prog p = 
     let (_, msg) = print_strings step in
     Format.eprintf
 "(* -------------------------------------------------------------------- *)@.";
     Format.eprintf "(* After %s *)@.@." msg;
     Format.eprintf "%a@.@.@." pp_prog p
+
+let eprint step pp_prog p =
+  if List.mem step !print_list then
+    eprint_msg step pp_prog p
+
