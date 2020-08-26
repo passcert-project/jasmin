@@ -9,7 +9,6 @@ MAXJOBS="3"
 declare -A SUBDIRS
 
 # Examples, sct-preserv
-
 SUBDIRS[sct-examples/chacha20/avx2/chacha20_v1.jazz]="plain;len"
 SUBDIRS[sct-examples/chacha20/avx2/chacha20_v4.jazz]="plain;len"
 SUBDIRS[sct-examples/chacha20/ref/chacha20.jazz]="plain;len"
@@ -28,19 +27,6 @@ SUBDIRS[sct-examples/poly1305/avx2/poly1305_export_v4.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_export.japp]="in;inlen"
 SUBDIRS[sct-examples/curve25519/ref4/curve25519.japp]=";"
 SUBDIRS[sct-examples/curve25519/ref4/curve25519_v4.japp]=";"
-
-# libjc, master
-SUBDIRS[crypto_onetimeauth/poly1305/ref3/in.japp]="in;inlen"
-SUBDIRS[crypto_onetimeauth/poly1305/avx/in.japp]="in;inlen"
-SUBDIRS[crypto_onetimeauth/poly1305/avx2/in.japp]="in;inlen"
-SUBDIRS[crypto_stream/chacha20/ref/in.japp]="plain;len"
-SUBDIRS[crypto_stream/chacha20/avx/in.japp]="plain;len"
-SUBDIRS[crypto_stream/chacha20/avx2/in.japp]="plain;len"
-# SUBDIRS[crypto_stream/chacha20/ref/in.japp]="output;len|plain;len"
-# SUBDIRS[crypto_stream/chacha20/avx/in.japp]="output;len|plain;len"
-# SUBDIRS[crypto_stream/chacha20/avx2/in.japp]="output;len|plain;len"
-SUBDIRS[crypto_scalarmult/curve25519/ref4/in.japp]=";"
-SUBDIRS[crypto_scalarmult/curve25519/mulx/in.japp]=";"
 
 
 CURJOBS=0
