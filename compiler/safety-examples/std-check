@@ -29,7 +29,7 @@ for i in "${!SUBDIRS[@]}"; do
   echo "Starting ${i}"
   (../jasminc ${OPTION} -safetyparam ${SUBDIRS[$i]} ${i} &> ${i}.res ;
    echo "=> Done ${i}, results" ;
-   grep Safety ${i}/out.res | sed 's/^/  /'
+   grep Safety ${i}.res | sed 's/^/  /'
   ) & ((++cur_jobs))
 done
 

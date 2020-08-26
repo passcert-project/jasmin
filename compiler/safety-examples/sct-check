@@ -23,8 +23,8 @@ SUBDIRS[sct-examples/chacha20/ref/chacha20_v4.jazz]="plain;len"
 # SUBDIRS[sct-examples/chacha20/ref/chacha20_v4.jazz]="output;len|plain;len"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_v4.japp]="in;inlen"
-SUBDIRS[sct-examples/poly1305/avx2/poly1305_export_v4.japp]="in;inlen"
-SUBDIRS[sct-examples/poly1305/avx2/poly1305_export.japp]="in;inlen"
+SUBDIRS[sct-examples/poly1305/ref3/poly1305_export_v4.japp]="in;inlen"
+SUBDIRS[sct-examples/poly1305/ref3/poly1305_export.japp]="in;inlen"
 SUBDIRS[sct-examples/curve25519/ref4/curve25519.japp]=";"
 SUBDIRS[sct-examples/curve25519/ref4/curve25519_v4.japp]=";"
 
@@ -36,7 +36,7 @@ for i in "${!SUBDIRS[@]}"; do
   echo "Starting ${i}"
   (../jasminc ${OPTION} -safetyparam ${SUBDIRS[$i]} ${i} &> ${i}.res ;
    echo "=> Done ${i}, results" ;
-   grep Safety ${i}/out.res | sed 's/^/  /'
+   grep Safety ${i}.res | sed 's/^/  /'
   ) & ((++cur_jobs))
 done
 
