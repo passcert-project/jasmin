@@ -1161,15 +1161,141 @@ let thresholds_vars env =
           :: acc) acc int_thresholds)
     [] vars
 
-(*******************)
-(* Abstract Values *)
-(*******************)
+
+(************************************)
+(* Numerical Domain Pretty Printing *)
+(************************************)
 
 module type AprManager = sig
   type t
 
   val man : t Apron.Manager.t
 end
+
+module PP (Man : AprManager) : sig
+  val pp : Format.formatter -> Man.t Apron.Abstract1.t -> unit
+end = struct
+  let coeff_eq_1 (c: Coeff.t) = match c with
+    | Coeff.Scalar s when Scalar.cmp_int s 1 = 0 -> true
+    | Coeff.Interval i when
+        Scalar.cmp_int i.Interval.inf 1 = 0 &&
+        Scalar.cmp_int i.Interval.sup 1 = 0 -> true
+    | _ -> false
+
+  let coeff_eq_0 (c: Coeff.t) = match c with
+    | Coeff.Scalar s -> Scalar.cmp_int s 0 = 0
+    | Coeff.Interval i ->
+      Scalar.cmp_int i.Interval.inf 0 = 0
+      && Scalar.cmp_int i.Interval.sup 0 = 0
+
+  let coeff_cmp_0 (c: Coeff.t) = match c with
+    | Coeff.Scalar s -> Some (Scalar.cmp_int s 0)
+    | Coeff.Interval i ->
+      if Scalar.cmp_int i.Interval.inf 0 > 0 then Some 1
+      else if Scalar.cmp_int i.Interval.sup 0 < 0 then Some (-1)
+      else None
+
+  let pp_coef_var_list fmt l =
+    match l with
+    | [] -> Format.fprintf fmt "0"
+    | _ -> Format.pp_print_list ~pp_sep:(fun fmt () -> Format.fprintf fmt " + ")
+             (fun fmt (c, v) ->
+                if coeff_eq_1 c then
+                  Format.fprintf fmt "%s" (Var.to_string v)
+                else
+                  Format.fprintf fmt "%a%s" Coeff.print c (Var.to_string v)) fmt l
+
+  let pp_typ fmt (x, b) = match x, b with
+    | Lincons1.DISEQ, _ -> Format.fprintf fmt "!="
+    | Lincons1.EQ, _ -> Format.fprintf fmt "="
+    | Lincons1.SUP, false -> Format.fprintf fmt ">"
+    | Lincons1.SUP, true -> Format.fprintf fmt "<"
+    | Lincons1.SUPEQ, false -> Format.fprintf fmt "≥"
+    | Lincons1.SUPEQ, true -> Format.fprintf fmt "≤"
+    | Lincons1.EQMOD _, _ -> assert false
+
+  let neg_list l =
+    List.map (fun (c, v) -> Coeff.neg c, v) l
+
+  let linexpr_to_list_pair env (x: Linexpr1.t) =
+    let envi, _ = Environment.vars env in
+    Array.fold_left (fun (pos, neg) var ->
+        let c = Linexpr1.get_coeff x var in
+        if coeff_eq_0 c then (pos, neg)
+        else match coeff_cmp_0 c with
+          | None -> (c, var) :: pos, neg
+          | Some x when x > 0 -> (c, var) :: pos, neg
+          | Some _ -> pos, (c, var)::neg
+      ) ([], []) envi
+
+  let pp_lincons fmt lc =
+    let cst = Lincons1.get_cst lc in
+    let typ = Lincons1.get_typ lc in
+    let pos, neg =
+      linexpr_to_list_pair (Lincons1.get_env lc) (Lincons1.get_linexpr1 lc) in
+    if coeff_eq_0 (cst) then
+      Format.fprintf fmt "%a %a %a"
+        pp_coef_var_list pos
+        pp_typ (typ, false)
+        pp_coef_var_list (neg_list neg)
+    else
+      match coeff_cmp_0 (cst) with
+      | Some x when x > 0 ->
+        if pos = [] then
+          Format.fprintf fmt "%a %a %a"
+            pp_coef_var_list (neg_list neg)
+            pp_typ (typ, true)
+            Coeff.print cst
+        else if neg = [] then
+          Format.fprintf fmt "%a %a %a"
+            pp_coef_var_list pos pp_typ
+            (typ, false)
+            Coeff.print (Coeff.neg cst)
+        else 
+          Format.fprintf fmt "%a %a %a + %a"
+            pp_coef_var_list (neg_list neg)
+            pp_typ (typ, true) pp_coef_var_list pos Coeff.print cst
+      | _ ->
+        if neg = [] then
+          Format.fprintf fmt "%a %a %a"
+            pp_coef_var_list pos pp_typ (typ, false)
+            Coeff.print (Coeff.neg cst)
+        else if pos = [] then
+          Format.fprintf fmt "%a %a %a" pp_coef_var_list (neg_list neg)
+            pp_typ (typ, true) Coeff.print (cst)
+        else 
+          Format.fprintf fmt "%a %a %a + %a" pp_coef_var_list pos
+            pp_typ (typ, false) pp_coef_var_list (neg_list neg)
+            Coeff.print (Coeff.neg cst)
+
+  let pp_lincons_earray fmt ea =
+    let rec read n =
+      if n < 0 then []
+      else
+        let x = Lincons1.array_get ea n in
+        x :: (read (n-1))
+    in
+    let l = read (Lincons1.array_length ea -1) in
+    match l with
+    | [] -> Format.fprintf fmt "⊤"
+    | _ -> 
+      Format.fprintf fmt "{%a}"
+        (Format.pp_print_list ~pp_sep:(fun fmt () -> Format.fprintf fmt ", ")
+                                   pp_lincons) l
+
+
+  let pp fmt x =
+    let man = Man.man in
+    if Abstract1.is_bottom man x then
+      Format.fprintf fmt "⊥"
+    else
+      let ea = Abstract1.to_lincons_array man x in
+      pp_lincons_earray fmt ea
+end
+
+(*******************)
+(* Abstract Values *)
+(*******************)
 
 module BoxManager : AprManager with type t = Box.t = struct
   type t = Box.t
@@ -1518,10 +1644,15 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
 
     | _ -> assign_expr_aux force a v e
 
+  module PP = PP(Manager)
+      
   let print : ?full:bool -> Format.formatter -> t -> unit =
     fun ?full:(full=false) fmt a ->
       if full && (is_relational ()) then
-        Format.fprintf fmt "@[<v 0>@[%a@]@;@]" Abstract1.print a;
+        Format.fprintf fmt "@[<v 0>@[%a@]@;@]"
+          PP.pp a
+      (* Abstract1.print a *)
+      ;
 
       let (arr_vars, _) = Environment.vars (Abstract1.env a) in
       let vars = Array.to_list arr_vars in
