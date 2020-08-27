@@ -405,7 +405,21 @@ let ty_mvar = function
   | MNumInv _ -> Bty Int
   | MmemRange _ -> Bty Int
 
-let avar_of_mvar a = string_of_mvar a |> Var.of_string
+(* We log the result to be able to inverse it. *)
+let log_var = Hashtbl.create 16
+    
+let avar_of_mvar a =
+  let s = string_of_mvar a in
+  if not(Hashtbl.mem log_var s) then
+    Hashtbl.add log_var s a;
+  Var.of_string s
+
+let mvar_of_avar v =
+  let s = Var.to_string v in
+  try Hashtbl.find log_var s with
+  | Not_found ->
+    Format.eprintf "mvar_of_avar: unknown variable %s@." s;
+    assert false
 
 (* Blasts array elements and arrays. *)
 let u8_blast_at ~blast_arrays at = match at with
@@ -2480,6 +2494,9 @@ module type AbsDisjType = sig
 
   (* Pop the top-most block of constraints in the disjunctive domain *)
   val pop_cnstr_blck : t -> L.t -> t
+
+  (* Pop all constraints in the disjunctive domain *)
+  val pop_all_blcks : t -> t
 end
 
 (* Disjunctive domain. Leaves are already constrained under the branch
@@ -2523,6 +2540,11 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
       let res = { mtcons = c; cpt_uniq = !_uniq; loc = i } in
       hc := Mmc.add (c,i) res !hc;
       res
+
+  let init_blk = { cblk_loc = L._dummy; cblk_cnstrs = [] }
+
+  let make_abs a = { tree = Leaf a;
+                     cnstrs = [ init_blk ]; }
 
   (*---------------------------------------------------------------*)
   let pp_cblk fmt cb =
@@ -2588,7 +2610,7 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
       | cs :: l, cs' :: l' ->
         if not (List.for_all2 cblk_equal l l') then begin
           (* REM *)
-          Format.eprintf "error tmerg:@;l:@;%a@.@.@.l':@;%a@.@.@."
+          Format.eprintf "error tmerg:@;l:@;%a@.l':@;%a@."
             pp_cblcks l
             pp_cblcks  l';
           assert false
@@ -2710,6 +2732,10 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
         cnstrs =  l }
     | _ -> raise (Aint_error "pop_cnstr_blck: empty list")
 
+  let pop_all_blcks t = 
+    let a = Ptree.eval (fun _ a b -> A.join a b) (fun _ a -> a) t.tree in
+    make_abs a
+
   let meet_constr_ne (a : A.t) l =
     let l_f = List.filter (fun c ->
         let cmp = Environment.compare (Mtcons.get_expr c).env (A.get_env a) in
@@ -2725,12 +2751,9 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
       | Ptree.Node (_,l,_) -> aux l
       | Ptree.Leaf x -> A.get_env x in
     aux t.tree
-
-  let init_blk = { cblk_loc = L._dummy; cblk_cnstrs = [] }
-
+                      
   (* Make a top value defined on the given variables *)
-  let make l = { tree = Leaf (A.make l);
-                 cnstrs = [ init_blk ]; }
+  let make l = make_abs (A.make l)
 
   let meet = apply2 (fun _ -> A.meet)
   let meet_list = apply_list (fun _ -> A.meet_list)
@@ -2840,6 +2863,8 @@ module Lift (A : AbsNumType) : AbsDisjType = struct
      | None -> t)
 
   let pop_cnstr_blck t _ = t
+
+  let pop_all_blcks t = t
 end
 
 (**************************************)
@@ -3145,13 +3170,14 @@ module MakeAbsDisjProf (A : DisjWrap) : AbsDisjType = struct
 
   include AProf
 
-  let of_box = A.Num.of_box
+  let of_box         = A.Num.of_box
   let new_cnstr_blck = A.Num.new_cnstr_blck
-  let add_cnstr = A.Num.add_cnstr
+  let add_cnstr      = A.Num.add_cnstr
   let pop_cnstr_blck = A.Num.pop_cnstr_blck
-  let to_shape = A.Num.to_shape
-  let top_no_disj = A.Num.top_no_disj
-  let remove_disj = A.Num.remove_disj
+  let pop_all_blcks  = A.Num.pop_all_blcks
+  let to_shape       = A.Num.to_shape
+  let top_no_disj    = A.Num.top_no_disj
+  let remove_disj    = A.Num.remove_disj
 
   let is_spec = ref None 
 
@@ -3227,6 +3253,13 @@ module MakeAbsDisjProf (A : DisjWrap) : AbsDisjType = struct
     let t = Sys.time () in
     let r = pop_cnstr_blck x loc in
     let () = call "pop_cnstr_blck" (Sys.time () -. t) in
+    r
+
+  let () = record "pop_all_blcks"
+  let pop_all_blcks x =
+    let t = Sys.time () in
+    let r = pop_all_blcks x in
+    let () = call "pop_all_blcks" (Sys.time () -. t) in
     r
 
 end
@@ -3710,8 +3743,9 @@ module type AbsNumBoolType = sig
   val print : ?full:bool -> Format.formatter -> t -> unit
 
   val new_cnstr_blck : t -> L.t -> t
-  val add_cnstr : t -> Mtcons.t -> L.t -> t * t
+  val add_cnstr      : t -> Mtcons.t -> L.t -> t * t
   val pop_cnstr_blck : t -> L.t -> t
+  val pop_all_blcks  : t -> t
 end
 
 
@@ -4166,6 +4200,8 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
     ( { t with num = tl }, { t with num = tr } )
 
   let pop_cnstr_blck t l = { t with num = AbsNum.R.pop_cnstr_blck t.num l }
+
+  let pop_all_blcks t = { t with num = AbsNum.R.pop_all_blcks t.num }
 end
 
 module AbsDomMake2 (PW : ProgWrap) : sig
@@ -4187,8 +4223,21 @@ end = struct
   let () = AbsDomStd.init_is_spec false
   let () = AbsDomSpc.init_is_spec true
 
-  let lift (x : AbsDomStd.t) : AbsDomSpc.t = x
+  (* We must:
+     - remove all disjunction.
+     - remove all termination-related values (i.e. MNumInv). *)
+  let lift (x : AbsDomStd.t) : AbsDomSpc.t =
+    let nd = AbsDomStd.pop_all_blcks x in    
+    let env = AbsDomStd.get_env nd in
+    let vars = fst (Environment.vars env) in
+    let rem = Array.to_list vars
+              |> List.filter_map (fun v ->
+                  match mvar_of_avar v with
+                  | MNumInv _ as mv -> Some mv
+                  | _ -> None) in    
+    AbsDomStd.remove_vars nd rem
 
+    
   let print ~print_spc fmt (std,spc) =
     if not print_spc then
       AbsDomStd.print ~full:true fmt std
@@ -5462,6 +5511,9 @@ end = struct
 
 
   (*---------------------------------------------------------------*)
+  (* The speculative semantics:
+     - has no disjunction.
+     - does not check for termination (hence no numerical invariant). *)
   type astate = { it : FAbs.t ItMap.t;
                   abs_std : AbsDomStd.t; (* standard semantics *)
                   abs_spc : AbsDomSpc.t; (* speculative semantics *)
@@ -6490,7 +6542,20 @@ end = struct
       | Copn(lvs, _, Expr.Ox86 (X86_instr_decl.LFENCE), es) ->
         assert (lvs = [] && es = []);
         let abs_scp = std_to_spc state.abs_std in
-        { state with abs_spc = abs_scp };
+
+        (* We need to add the memory accesses made in the speculative abstract
+           value [state.abs_spc]. *)
+        let env = AbsDomSpc.get_env state.abs_spc in
+        let mem_vars = fst (Environment.vars env)
+                   |> Array.to_list
+                   |> List.filter_map (fun v ->
+                       match mvar_of_avar v with
+                       | Mglobal _ | MmemRange _ | MinValue _ as mv -> Some mv
+                       | Mvalue _ | MvarOffset _ -> None
+                       | MNumInv _ | Temp _ | WTemp _ -> assert false) in
+        let mem_abs_spc = AbsDomSpc.change_environment state.abs_spc mem_vars in
+        
+        { state with abs_spc = AbsDomSpc.join abs_scp mem_abs_spc };
         
       | Copn (lvs,_,opn,es) ->
         (* Remark: the assignments must be done in the correct order. *)
