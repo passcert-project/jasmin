@@ -92,6 +92,11 @@ module Aparam = struct
   (* Add disjunction with if statement when possible *)
   let if_disj = true
 
+  (* Handle top-level conditional move and if expressions as if statements.
+     Combinatorial explosion if there are many movecc and if expressions in the
+     same block. *)
+  let pif_movecc_as_if = true
+
   (* Pre-analysis looks for the variable corresponding to return boolean 
      flags appearing in while loop condition (adding them to the set of 
      variables in the relational domain). *)
@@ -113,9 +118,10 @@ module Aparam = struct
   (* Turn on printing of unconstrained variables *)
   let ignore_unconstrained = true (* default: true *)
 
+  type init_print = IP_None | IP_NoArray | IP_All
   (* Turn on printing of not initialized variables 
      (i.e. it is not certain that the variable is initialized). *)
-  let is_init_no_print = true   (* defaul: true *)
+  let is_init_no_print = IP_NoArray   (* defaul: IP_None *)
 
   (* Turn on printing of boolean variables *)
   let bool_no_print = true   (* defaul: true *)
@@ -2948,7 +2954,7 @@ module PIMake (PW : ProgWrap) : VDomWrap = struct
   let v_pt : Sv.t = add_flow pt_ini
 
   let pp_rel_vars fmt rel =
-    (pp_list (Printer.pp_var ~debug:true)) fmt
+    (pp_list (Printer.pp_var ~debug:false)) fmt
       (List.sort (fun v v' -> Stdlib.compare v.v_name v'.v_name)
          (Sv.elements rel))
 
@@ -3862,7 +3868,10 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
       num = AbsNum.R.meet t.num t'.num;
       points_to = Pt.meet t.points_to t'.points_to }
 
-  let join : t -> t -> t = apply2 AbsNum.R.join AbsNum.NR.join Pt.join
+  let join t t' =
+    if AbsNum.R.is_bottom t.num       then t'
+    else if AbsNum.R.is_bottom t'.num then t
+    else apply2 AbsNum.R.join AbsNum.NR.join Pt.join t t'
 
   let widening : Mtcons.t option -> t -> t -> t = fun oc ->
     apply2 (AbsNum.R.widening oc) (AbsNum.NR.widening oc) Pt.widening
@@ -4137,24 +4146,31 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
 
   let get_env : t -> Environment.t = fun t -> AbsNum.R.get_env t.num
 
-  let print_init : Format.formatter -> t -> unit = fun fmt t ->
-    let dnum = AbsNum.downgrade t.num in
-    let check' a =
-      try AbsNum.NR.meet dnum a |> AbsNum.NR.is_bottom with
-      | Not_found -> AbsNum.R.is_bottom t.num in
+  let print_init fmt t = match Aparam.is_init_no_print with
+    | Aparam.IP_None -> Format.fprintf fmt ""
+    | Aparam.IP_All | Aparam.IP_NoArray ->
+      let keep s =
+        let v = Var.of_string s in
+        match mvar_of_avar v  with
+        | Mvalue (AarrayEl _)
+          when Aparam.is_init_no_print = Aparam.IP_NoArray -> false
+        | _ -> true
+      in
+      
+      let dnum = AbsNum.downgrade t.num in
+      let check' a =
+        try AbsNum.NR.meet dnum a |> AbsNum.NR.is_bottom with
+        | Not_found -> AbsNum.R.is_bottom t.num in
 
-    let m = EMs.map (fun a -> check' a) t.init in
-    Format.fprintf fmt "@[<hv 2>* Init:@;";
-    EMs.iter (fun s b ->
-        if b then Format.fprintf fmt "%s@ " s else ()) m;
-    Format.fprintf fmt "@]@;"
-    
+      let m = EMs.map (fun a -> check' a) t.init in
+      Format.fprintf fmt "@[<h 2>* Init:@;";
+      EMs.iter (fun s b ->
+          if b && keep s then Format.fprintf fmt "%s@ " s else ()) m;
+      Format.fprintf fmt "@]@;"
+
   let print : ?full:bool -> Format.formatter -> t -> unit =
     fun ?full:(full=false) fmt t ->
-    let print_init fmt =
-      if Aparam.is_init_no_print then
-        Format.fprintf fmt "" 
-      else print_init fmt t in
+    let print_init fmt = print_init fmt t in
 
     let print_bool fmt =
       if Aparam.bool_no_print then 
@@ -5930,7 +5946,8 @@ end = struct
     let state = forget_stack_vars state in
 
     let state = { state with 
-                  abs_std = AbsDomStd.new_cnstr_blck state.abs_std callsite } in
+                  abs_std = AbsDomStd.new_cnstr_blck state.abs_std callsite;
+                  abs_spc = AbsDomSpc.new_cnstr_blck state.abs_spc callsite } in
 
     { state with cstack = f :: state.cstack;
                  s_effects = [] }
@@ -5970,8 +5987,9 @@ end = struct
     let state = forget_side_effect state fstate.s_effects in
 
     (* We pop the top-most block of constraints in the callee *)
-    let fstate = { fstate with 
-                   abs_std = AbsDomStd.pop_cnstr_blck fstate.abs_std callsite } in
+    let fabs_std = AbsDomStd.pop_cnstr_blck fstate.abs_std callsite
+    and fabs_spc = AbsDomSpc.pop_cnstr_blck fstate.abs_spc callsite in
+    let fstate = { fstate with abs_std = fabs_std; abs_spc = fabs_spc; } in
 
     (* We forget variables untouched by f in the callee *)
     let fstate = forget_no_side_effect fstate fstate.s_effects in
@@ -6259,10 +6277,11 @@ end = struct
     | ADOX    of wsize  (* add with overflow flag, only writes overflow flag *)
     *)
 
-    (* (\* conditional copy *\)
-     * | E.Ox86 (X86_instr_decl.CMOVcc sz) ->
-     *   let c,el,er = as_seq3 es in 
-     *   if b then el else er *)
+    (* conditional copy *)
+    | E.Ox86 (X86_instr_decl.CMOVcc sz) ->
+      let c,el,er = as_seq3 es in
+      let e = Pif (Bty (U sz), c, el, er) in
+      [Some e] 
 
     (* bitwise operators *)
     | E.Ox86 (X86_instr_decl.TEST _)
@@ -6526,6 +6545,21 @@ end = struct
 
   and aeval_ginstr_aux : ('ty,'info) ginstr -> astate -> astate =
     fun ginstr state -> match ginstr.i_desc with 
+      | Cassgn (lv,tag,ty1, Pif (ty2, c, el, er))
+        when Aparam.pif_movecc_as_if ->
+        assert (ty1 = ty2);
+        let cl = { ginstr with i_desc = Cassgn (lv, tag, ty1, el) } in
+        let cr = { ginstr with i_desc = Cassgn (lv, tag, ty2, er) } in
+        aeval_if ~spec:false ginstr c [cl] [cr] state
+
+      | Copn (lvs,tag,E.Ox86 (X86_instr_decl.CMOVcc sz),es)
+        when Aparam.pif_movecc_as_if ->
+        let c,el,er = as_seq3 es in
+        let lv = as_seq1 lvs in
+        let cl = { ginstr with i_desc = Cassgn (lv, tag, Bty (U sz), el) } in
+        let cr = { ginstr with i_desc = Cassgn (lv, tag, Bty (U sz), er) } in
+        aeval_if ~spec:false ginstr c [cl] [cr] state
+
       | Cassgn (lv, _, _, e) ->
         let abs_std = AbsExprStd.abs_assign
             state.abs_std 
@@ -6555,8 +6589,8 @@ end = struct
                        | MNumInv _ | Temp _ | WTemp _ -> assert false) in
         let mem_abs_spc = AbsDomSpc.change_environment state.abs_spc mem_vars in
         
-        { state with abs_spc = AbsDomSpc.join abs_scp mem_abs_spc };
-        
+        { state with abs_spc = AbsDomSpc.meet abs_scp mem_abs_spc };
+
       | Copn (lvs,_,opn,es) ->
         (* Remark: the assignments must be done in the correct order. *)
         let assgns = split_opn (List.length lvs) opn es in
@@ -6566,41 +6600,7 @@ end = struct
         { state with abs_std = abs_std; abs_spc = abs_spc; }
 
       | Cif(e,c1,c2) ->
-        (* This is only for the standard semantics.
-           In the speculative semantics, the wrong branch may be executed. *)
-        let eval_cond state = function
-          | Some ec -> AbsDomStd.meet_btcons state.abs_std ec
-          | None -> state.abs_std in
-        let oec = AbsExprStd.bexpr_to_btcons e state.abs_std in
-
-        let labs_std, rabs_std =
-          if Aparam.if_disj && is_some (simpl_obtcons oec) then
-            let ec = simpl_obtcons oec |> oget in
-            AbsDomStd.add_cnstr state.abs_std ec (fst ginstr.i_loc)
-          else
-            let noec = obind flip_btcons oec in
-            ( eval_cond state oec, eval_cond state noec ) in
-
-        let lstate = aeval_gstmt c1 { state with abs_std = labs_std } in
-
-        let cpt_instr = !num_instr_evaluated - 1 in
-
-        (* We abstractly evaluate the right branch
-           Be careful the start from lstate, as we need to use the
-           updated abstract iterator. *)
-        let rstate = aeval_gstmt c2 { lstate with abs_std = rabs_std;
-                                                  abs_spc = state.abs_spc; } in
-
-        let abs_res_std = AbsDomStd.join lstate.abs_std rstate.abs_std in
-        let abs_res_spc = AbsDomSpc.join lstate.abs_spc rstate.abs_spc in
-        debug (fun () ->
-            print_if_join ~print_spc:state.spec_analysis 
-              cpt_instr ginstr 
-              (std_spc lstate) 
-              (std_spc rstate)
-              (abs_res_std, abs_res_spc));
-        { rstate with abs_std = abs_res_std;
-                      abs_spc = abs_res_spc; }
+        aeval_if ~spec:true ginstr e c1 c2 state
 
       | Cwhile(_,c1, e, c2) ->
         let prog_pt = fst ginstr.i_loc in
@@ -6683,11 +6683,10 @@ end = struct
         let eval_body state_i state =
           let cpt_instr = !num_instr_evaluated - 1 in
 
-          (* We add a disjunctive constraint block for the standard semantics *)
-          let state_i = { state_i with
-                          abs_std = 
-                            AbsDomStd.new_cnstr_blck
-                              state_i.abs_std prog_pt } in
+          (* We add a disjunctive constraint block. *)
+          let abs_std = AbsDomStd.new_cnstr_blck state_i.abs_std prog_pt
+          and abs_spc = AbsDomSpc.new_cnstr_blck state_i.abs_spc prog_pt in
+          let state_i = { state_i with abs_std = abs_std; abs_spc = abs_spc; } in
 
           let state_o = aeval_gstmt (c2 @ c1) state_i in
 
@@ -6704,12 +6703,10 @@ end = struct
                             AbsDomStd.forget_list
                               state_o.abs_std [mvar_ni] } in
 
-          (* We pop the disjunctive constraint block for the standard 
-             semantics *)
-          let state_o = { state_o with
-                          abs_std = 
-                            AbsDomStd.pop_cnstr_blck 
-                              state_o.abs_std prog_pt } in
+          (* We pop the disjunctive constraint block *)
+          let abs_std = AbsDomStd.pop_cnstr_blck state_o.abs_std prog_pt
+          and abs_spc = AbsDomSpc.pop_cnstr_blck state_o.abs_spc prog_pt in
+          let state_o = { state_o with abs_std = abs_std; abs_spc = abs_spc; } in
 
           let abs_r_std = AbsDomStd.join state.abs_std state_o.abs_std in
           let abs_r_spc = AbsDomSpc.join state.abs_spc state_o.abs_spc in
@@ -6900,10 +6897,10 @@ end = struct
             and apr_env_spc = AbsDomSpc.get_env state.abs_spc in 
 
             List.fold_left ( fun state ci ->
-                (* We add a disjunctive constraint block for the standard
-                   semantics abstraction. *)
-                let std = AbsDomStd.new_cnstr_blck state.abs_std prog_pt in
-                let state = { state with abs_std = std } in
+                (* We add a disjunctive constraint block. *)
+                let std = AbsDomStd.new_cnstr_blck state.abs_std prog_pt
+                and spc = AbsDomSpc.new_cnstr_blck state.abs_spc prog_pt in
+                let state = { state with abs_std = std; abs_spc = spc; } in
 
                 (* We set the integer variable i to ci. *)
                 let expr_ci_std = Mtexpr.cst apr_env_std (Coeff.s_of_int ci)
@@ -6924,10 +6921,10 @@ end = struct
                     abs_spc = AbsDomSpc.is_init abs_spc (Avar (L.unloc i)); }
                   |> aeval_gstmt c in
 
-                (* We pop the disjunctive constraint block for the standard
-                   semantics abstraction. *)
-                { state with
-                  abs_std = AbsDomStd.pop_cnstr_blck state.abs_std prog_pt }
+                (* We pop the disjunctive constraint block. *)
+                let abs_std = AbsDomStd.pop_cnstr_blck state.abs_std prog_pt
+                and abs_spc = AbsDomSpc.pop_cnstr_blck state.abs_spc prog_pt in
+                { state with abs_std = abs_std; abs_spc = abs_spc; } 
               ) state range
 
         | _ ->
@@ -6993,6 +6990,60 @@ end = struct
         (* It remains to add the disjunctions of the call_site to st_out *)
         { st_out_ndisj with 
           abs_std = AbsDomStd.to_shape st_out_ndisj.abs_std st_in.abs_std }
+        
+  and aeval_if ~spec ginstr e c1 c2 state =
+    (* Standard semantics. *)
+    let eval_cond_std state = function
+      | Some ec -> AbsDomStd.meet_btcons state.abs_std ec
+      | None -> state.abs_std in
+    let oec_std = AbsExprStd.bexpr_to_btcons e state.abs_std in
+
+    let labs_std, rabs_std =
+      if Aparam.if_disj && is_some (simpl_obtcons oec_std) then
+        let ec = simpl_obtcons oec_std |> oget in
+        AbsDomStd.add_cnstr state.abs_std ec (fst ginstr.i_loc)
+      else
+        let noec_std = obind flip_btcons oec_std in
+        ( eval_cond_std state oec_std, eval_cond_std state noec_std ) in
+
+    (* Speculative semantics. *)
+    let eval_cond_spc state = function
+      | Some ec -> AbsDomSpc.meet_btcons state.abs_spc ec
+      | None -> state.abs_spc in
+    let oec_spc = AbsExprSpc.bexpr_to_btcons e state.abs_spc in
+
+    let labs_spc, rabs_spc =
+      if spec
+      then state.abs_spc, state.abs_spc
+      else if Aparam.if_disj && is_some (simpl_obtcons oec_spc) then
+        let ec = simpl_obtcons oec_spc |> oget in
+        AbsDomSpc.add_cnstr state.abs_spc ec (fst ginstr.i_loc)
+      else
+        let noec_spc = obind flip_btcons oec_spc in
+        ( eval_cond_spc state oec_spc, eval_cond_spc state noec_spc ) in
+
+    (* Branches evaluation *)
+    let lstate = aeval_gstmt c1 { state with abs_std = labs_std;
+                                             abs_spc = labs_spc} in
+
+    let cpt_instr = !num_instr_evaluated - 1 in
+
+    (* We abstractly evaluate the right branch
+       Be careful the start from lstate, as we need to use the
+       updated abstract iterator. *)
+    let rstate = aeval_gstmt c2 { lstate with abs_std = rabs_std;
+                                              abs_spc = rabs_spc; } in
+
+    let abs_res_std = AbsDomStd.join lstate.abs_std rstate.abs_std in
+    let abs_res_spc = AbsDomSpc.join lstate.abs_spc rstate.abs_spc in
+    debug (fun () ->
+        print_if_join ~print_spc:state.spec_analysis 
+          cpt_instr ginstr 
+          (std_spc lstate) 
+          (std_spc rstate)
+          (abs_res_std, abs_res_spc));
+    { rstate with abs_std = abs_res_std;
+                  abs_spc = abs_res_spc; }
 
   and aeval_body f_body state =
     debug (fun () -> Format.eprintf "Evaluating the body ...@.@.");
@@ -7000,15 +7051,15 @@ end = struct
 
   and aeval_gstmt : ('ty,'i) gstmt -> astate -> astate =
     fun gstmt state ->
-      let state = List.fold_left (fun state ginstr ->
-          aeval_ginstr ginstr state)
-          state gstmt in
-      let () = debug (fun () ->
-          if gstmt <> [] then
-            Format.eprintf "%a%!"
-              (AbsDom2.print ~print_spc:state.spec_analysis) 
-              (std_spc state)) in
-      state
+    let state = List.fold_left (fun state ginstr ->
+        aeval_ginstr ginstr state)
+        state gstmt in
+    let () = debug (fun () ->
+        if gstmt <> [] then
+          Format.eprintf "%a%!"
+            (AbsDom2.print ~print_spc:state.spec_analysis) 
+            (std_spc state)) in
+    state
 
   (* Select the call strategy for [f_decl] in [st_in] *)
   and aeval_call_strategy callsite f_decl st_in =
