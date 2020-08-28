@@ -420,12 +420,15 @@ let avar_of_mvar a =
     Hashtbl.add log_var s a;
   Var.of_string s
 
-let mvar_of_avar v =
-  let s = Var.to_string v in
+let mvar_of_svar s =
   try Hashtbl.find log_var s with
   | Not_found ->
-    Format.eprintf "mvar_of_avar: unknown variable %s@." s;
+    Format.eprintf "mvar_of_svar: unknown variable %s@." s;
     assert false
+
+let mvar_of_avar v =
+  let s = Var.to_string v in
+  mvar_of_svar s
 
 (* Blasts array elements and arrays. *)
 let u8_blast_at ~blast_arrays at = match at with
@@ -1223,7 +1226,7 @@ end = struct
                 if coeff_eq_1 c then
                   Format.fprintf fmt "%s" (Var.to_string v)
                 else
-                  Format.fprintf fmt "%a%s" Coeff.print c (Var.to_string v)) fmt l
+                  Format.fprintf fmt "%a·%s" Coeff.print c (Var.to_string v)) fmt l
 
   let pp_typ fmt (x, b) = match x, b with
     | Lincons1.DISEQ, _ -> Format.fprintf fmt "!="
@@ -2505,12 +2508,36 @@ module type AbsDisjType = sig
   val pop_all_blcks : t -> t
 end
 
+(*---------------------------------------------------------------*)
+type cnstr_blk = { cblk_loc : L.t;
+                   cblk_cnstrs : cnstr list; }
+
+(* hashconsing *)
+module MC = struct
+  type t = Mtcons.t * L.t
+  let compare (t,l) (t',l') =
+    if Mtcons.equal_tcons t t' && l = l' 
+    then 0 
+    else Stdlib.compare (t,l) (t',l')
+
+  let equal (t,l) (t',l') =  Mtcons.equal_tcons t t' && l = l' 
+end
+module Mmc = Map.Make(MC)
+
+let hc = ref Mmc.empty
+let _uniq = ref 0
+
+let make_cnstr c i =
+  try Mmc.find (c,i) !hc with
+  | Not_found ->
+    incr _uniq;
+    let res = { mtcons = c; cpt_uniq = !_uniq; loc = i } in
+    hc := Mmc.add (c,i) res !hc;
+    res
+
 (* Disjunctive domain. Leaves are already constrained under the branch
    conditions. *)
 module AbsDisj (A : AbsNumType) : AbsDisjType = struct
-
-  type cnstr_blk = { cblk_loc : L.t;
-                     cblk_cnstrs : cnstr list; }
 
   type t = { tree : A.t Ptree.t;
              cnstrs : cnstr_blk list }
@@ -2521,31 +2548,6 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
   let init_is_spec b = match !is_spec with
     | None -> is_spec := Some b; A.init_is_spec b
     | Some _ -> assert false    (* Should not initialize this twice *)
-
-
-  (*---------------------------------------------------------------*)
-  (* hashconsing *)
-  module MC = struct
-    type t = Mtcons.t * L.t
-    let compare (t,l) (t',l') =
-      if Mtcons.equal_tcons t t' && l = l' 
-      then 0 
-      else Stdlib.compare (t,l) (t',l')
-
-    let equal (t,l) (t',l') =  Mtcons.equal_tcons t t' && l = l' 
-  end
-  module Mmc = Map.Make(MC)
-
-  let hc = ref Mmc.empty
-  let _uniq = ref 0
-
-  let make_cnstr c i =
-    try Mmc.find (c,i) !hc with
-    | Not_found ->
-      incr _uniq;
-      let res = { mtcons = c; cpt_uniq = !_uniq; loc = i } in
-      hc := Mmc.add (c,i) res !hc;
-      res
 
   let init_blk = { cblk_loc = L._dummy; cblk_cnstrs = [] }
 
@@ -2558,17 +2560,20 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
       L.pp_sloc cb.cblk_loc
       pp_cnstrs cb.cblk_cnstrs 
 
-  let pp_cblcks fmt =
+  let pp_cblks fmt =
     Format.fprintf fmt "@[<v 0>%a@]"
       (pp_list ~sep:(fun fmt () -> Format.fprintf fmt "@;") pp_cblk)
       
   let cblk_equal cb cb' =
-    cb.cblk_loc = cb'.cblk_loc 
+    cb.cblk_loc = cb'.cblk_loc
+    && List.length cb.cblk_cnstrs = List.length cb'.cblk_cnstrs
     && List.for_all2 (fun c c' -> c.cpt_uniq = c'.cpt_uniq) 
       cb.cblk_cnstrs cb'.cblk_cnstrs
 
   (*---------------------------------------------------------------*)
-  let same_shape t t' = t.cnstrs = t'.cnstrs
+  let same_shape t t' =
+    List.length t.cnstrs = List.length t'.cnstrs
+    && List.for_all2 cblk_equal t.cnstrs t'.cnstrs
 
   let compare c c' = Stdlib.compare c.cpt_uniq c'.cpt_uniq
 
@@ -2617,8 +2622,8 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
         if not (List.for_all2 cblk_equal l l') then begin
           (* REM *)
           Format.eprintf "error tmerg:@;l:@;%a@.l':@;%a@."
-            pp_cblcks l
-            pp_cblcks  l';
+            pp_cblks l
+            pp_cblks  l';
           assert false
         end;
         if not (cs.cblk_loc = cs'.cblk_loc) then begin
@@ -2711,7 +2716,7 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
 
   let add_cnstr : t -> Mtcons.t -> L.t -> t * t = fun t c loc ->
     match t.cnstrs with
-    | cs :: l ->
+    | cs :: l ->     
       let cnstr = make_cnstr c loc in
       let f x = add_cnstr_blck cnstr x
       and fn c (mtl,mtl') (mtr,mtr') = ( Ptree.Node (c, mtl, mtr),
@@ -4150,8 +4155,7 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
     | Aparam.IP_None -> Format.fprintf fmt ""
     | Aparam.IP_All | Aparam.IP_NoArray ->
       let keep s =
-        let v = Var.of_string s in
-        match mvar_of_avar v  with
+        match mvar_of_svar s with
         | Mvalue (AarrayEl _)
           when Aparam.is_init_no_print = Aparam.IP_NoArray -> false
         | _ -> true
@@ -4239,19 +4243,16 @@ end = struct
   let () = AbsDomStd.init_is_spec false
   let () = AbsDomSpc.init_is_spec true
 
-  (* We must:
-     - remove all disjunction.
-     - remove all termination-related values (i.e. MNumInv). *)
+  (* We remove all termination-related values (i.e. MNumInv). *)
   let lift (x : AbsDomStd.t) : AbsDomSpc.t =
-    let nd = AbsDomStd.pop_all_blcks x in    
-    let env = AbsDomStd.get_env nd in
+    let env = AbsDomStd.get_env x in
     let vars = fst (Environment.vars env) in
     let rem = Array.to_list vars
               |> List.filter_map (fun v ->
                   match mvar_of_avar v with
                   | MNumInv _ as mv -> Some mv
                   | _ -> None) in    
-    AbsDomStd.remove_vars nd rem
+    AbsDomStd.remove_vars x rem
 
     
   let print ~print_spc fmt (std,spc) =
@@ -6481,7 +6482,7 @@ end = struct
   let num_instr_evaluated = ref 0
 
   let print_ginstr ~print_spc ginstr (std,spc) =
-    Format.eprintf "@[<v>@[<v>%a@]@;*** %d Instr: %a %a@;@]%!"
+    Format.eprintf "@[<v>@[<v>%a@]@;*** %d Instr: %a %a@;@;@]%!"
       (AbsDom2.print ~print_spc:print_spc) (std,spc)
       (let a = !num_instr_evaluated in incr num_instr_evaluated; a)
       L.pp_sloc (fst ginstr.i_loc)
