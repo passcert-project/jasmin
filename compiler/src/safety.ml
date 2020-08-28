@@ -83,6 +83,9 @@ module Aparam = struct
      then this should always terminates. *)
   let widening_out = false
 
+  (* Zero thresholds for the widening. *)
+  let zero_threshold = true
+
   (* More thresholds for the widening. *)
   let more_threshold = false
 
@@ -91,6 +94,10 @@ module Aparam = struct
 
   (* Add disjunction with if statement when possible *)
   let if_disj = true
+
+  (* Try to enrich the widening of A and B with the constraints of A 
+     that are satisfied by B. *)
+  let enrich_widening = true
 
   (* Handle top-level conditional move and if expressions as if statements.
      Combinatorial explosion if there are many movecc and if expressions in the
@@ -1169,6 +1176,14 @@ let thresholds_uint env v =
       Lincons1.make (lc true false) Lincons0.SUPEQ :: acc
     ) acc int_thresholds
 
+let thresholds_zero env =
+  let vars = Environment.vars env
+             |> fst
+             |> Array.to_list in
+  List.map (fun v ->
+      Lincons1.make (lcons env v (Mpqf.of_int 0) false true) Lincons0.SUPEQ
+    ) vars
+    
 let thresholds_vars env =
   let vars = Environment.vars env
              |> fst
@@ -1449,7 +1464,11 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
     let a_list = lce_list a_list in
     Abstract1.join_array man (Array.of_list a_list)
 
-
+  let earray_to_list ea = 
+    List.init
+      (Lincons1.array_length ea)
+      (fun i -> Lincons1.array_get ea i)
+    
   let to_earray env l =
     let arr = Lincons1.array_make env (List.length l) in
     let () = List.iteri (fun i c -> Lincons1.array_set arr i c) l in
@@ -1460,10 +1479,15 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
     | None -> []
     | Some lc -> [lc]
 
-  let widening oc a a' =
-    let a,a' = lce a a' in
+  let enrich_widening a a' res =
     let env = Abstract1.env a in
-    
+    let ea = Abstract1.to_lincons_array man a
+             |> earray_to_list in
+    let to_add = List.filter (fun lin -> Abstract1.sat_lincons man a' lin) ea
+                 |> to_earray env in
+    Abstract1.meet_lincons_array man res to_add
+
+  let compute_thresholds env oc =
     let vars = 
       omap_dfl (fun c -> 
           Mtexpr.get_var_mexpr (Mtcons.get_expr c).mexpr
@@ -1472,19 +1496,34 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
       List.map (fun v -> thresholds_uint env (avar_of_mvar v)) vars 
       |> List.flatten in
     let thrs_oc = thrs_of_oc oc env in
-    let thrs = 
+    let thrs = thrs_oc @ thrs_vars in
+    let thrs =
       if Aparam.more_threshold 
-      then thresholds_vars env @ thrs_oc @ thrs_vars
-      else thrs_oc @ thrs_vars in
-    
+      then thresholds_vars env @ thrs
+      else thrs in
+    let thrs =
+      if Aparam.zero_threshold 
+      then thresholds_zero env @ thrs
+      else thrs in
+
     if is_relational () then
       debug(fun () -> Format.eprintf "@[<v 2>threshold(s):@; %a@."
                (pp_list Lincons1.print) thrs);
+    thrs
 
+  let widening oc a a' =
+    let a,a' = lce a a' in
+    let env = Abstract1.env a in
+    
+    let thrs = compute_thresholds env oc in
+    
     (* Be careful to join a and a' before calling widening. Some abstract domain,
        e.g. Polka, seem to assume that a is included in a'
        (and may segfault otherwise!). *)
-  Abstract1.widening_threshold man a a' (thrs |> to_earray env)
+    let res = Abstract1.widening_threshold man a a' (thrs |> to_earray env) in
+    if Aparam.enrich_widening
+    then enrich_widening a a' res
+    else res
 
   let forget_list a l =
     let l = u8_blast_vars ~blast_arrays:true l in
@@ -6576,21 +6615,39 @@ end = struct
 
       | Copn(lvs, _, Expr.Ox86 (X86_instr_decl.LFENCE), es) ->
         assert (lvs = [] && es = []);
-        let abs_scp = std_to_spc state.abs_std in
+        (* We build the new speculative abstract state.
+           We want to have the memory accesses of the speculative semantics, 
+           and the program state of the standard semantics. *)
+        let env_spc = AbsDomSpc.get_env state.abs_spc in
+        let env_std = AbsDomSpc.get_env state.abs_spc in
 
-        (* We need to add the memory accesses made in the speculative abstract
-           value [state.abs_spc]. *)
-        let env = AbsDomSpc.get_env state.abs_spc in
-        let mem_vars = fst (Environment.vars env)
-                   |> Array.to_list
-                   |> List.filter_map (fun v ->
-                       match mvar_of_avar v with
-                       | Mglobal _ | MmemRange _ | MinValue _ as mv -> Some mv
-                       | Mvalue _ | MvarOffset _ -> None
-                       | MNumInv _ | Temp _ | WTemp _ -> assert false) in
-        let mem_abs_spc = AbsDomSpc.change_environment state.abs_spc mem_vars in
+        (* For the standard abstract value, we forget the memory access 
+           variables. *)
+        let forget_std =
+          fst (Environment.vars env_std)
+          |> Array.to_list
+          |> List.filter_map (fun v ->
+              match mvar_of_avar v with
+              | MmemRange _ as mv -> Some mv
+              | Mglobal _| MinValue _ | Mvalue _ | MvarOffset _ -> None
+              | MNumInv _ | Temp _ | WTemp _ -> assert false) in
+        let abs_spc1 = AbsDomStd.forget_list state.abs_std forget_std
+                       |> std_to_spc in
+
+        (* For the speculative abstract value, we forget everything
+           except the memory access variables, and the variables initial
+           values. *)
+        let forget_spc =
+          fst (Environment.vars env_spc)
+          |> Array.to_list
+          |> List.filter_map (fun v ->
+              match mvar_of_avar v with
+              | Mglobal _ | MinValue _ | MmemRange _ -> None
+              | Mvalue _ | MvarOffset _ as mv -> Some mv
+              | MNumInv _ | Temp _ | WTemp _ -> assert false) in
+        let abs_spc2 = AbsDomSpc.forget_list state.abs_spc forget_spc in
         
-        { state with abs_spc = AbsDomSpc.meet abs_scp mem_abs_spc };
+        { state with abs_spc = AbsDomSpc.meet abs_spc1 abs_spc2 };
 
       | Copn (lvs,_,opn,es) ->
         (* Remark: the assignments must be done in the correct order. *)
