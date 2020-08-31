@@ -994,6 +994,8 @@ fn poly1305_avx2_update(
   t = #VPBROADCAST_4u64(bit25_u64); s_bit25 = t;
 
   // load first 64 bytes of input
+	// the fence is to ensure that len is larger than 64 before loading
+	#LFENCE;
   m, in = load_avx2(in, mask26, s_bit25);
 
   s_in  = in;
