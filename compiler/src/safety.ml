@@ -4270,7 +4270,8 @@ module AbsDomMake2 (PW : ProgWrap) : sig
   val lift : AbsDomStd.t -> AbsDomSpc.t
 
   val print :
-    print_spc:bool -> Format.formatter -> (AbsDomStd.t * AbsDomSpc.t) -> unit
+    print_spc:bool -> Format.formatter ->
+    (AbsDomStd.t * AbsDomSpc.t * AbsDomSpc.t) -> unit
 end = struct
   module AbsDomMake (PW : ProgWrap) =
     AbsBoolNoRel (AbsNumTMake (PW)) (PointsToImpl)
@@ -4294,16 +4295,18 @@ end = struct
     AbsDomStd.remove_vars x rem
 
     
-  let print ~print_spc fmt (std,spc) =
+  let print ~print_spc fmt (std,spc,dead_spc) =
     if not print_spc then
       AbsDomStd.print ~full:true fmt std
     else
       Format.eprintf "@[<v 0>\
                       [* Standard semantics *]@;@[<v 0>%a@]\
-                      [* Speculative semantics *]@;@[<v 0>%a@]@;\
+                      [* Speculative semantics (live) *]@;@[<v 0>%a@]@;\
+                      [* Speculative semantics (dead) *]@;@[<v 0>%a@]@;\
                       @]%!"
         (AbsDomStd.print ~full:true) std
         (AbsDomSpc.print ~full:true) spc
+        (AbsDomSpc.print ~full:true) dead_spc
 end  
 
 
@@ -5512,6 +5515,21 @@ end = struct
 
   let std_to_spc = AbsDom2.lift
 
+  (* Keeps only the program initial values and memory accesses variables. *)
+  let spc_to_dead_spc a =
+    let env = AbsDomSpc.get_env a in
+    let forget_spc = 
+      fst (Environment.vars env)
+      |> Array.to_list
+      |> List.filter_map (fun v ->
+          match mvar_of_avar v with
+          | Mglobal _ | MinValue _ | MmemRange _ -> None
+          | Mvalue _ | MvarOffset _ as mv -> Some mv
+          | MNumInv _ | Temp _ | WTemp _ -> assert false) in
+    AbsDomSpc.forget_list a forget_spc
+    |> AbsDomSpc.pop_all_blcks
+
+
   module AbsExprStd = AbsExpr (AbsDomStd)
   module AbsExprSpc = AbsExpr (AbsDomSpc)
 
@@ -5567,12 +5585,14 @@ end = struct
 
 
   (*---------------------------------------------------------------*)
-  (* The speculative semantics:
-     - has no disjunction.
-     - does not check for termination (hence no numerical invariant). *)
+  (* The speculative semantics does not check for termination
+     (hence no numerical invariant). 
+     [abs_dead_spc] is an abstraction of the memory accesses of the 
+     speculative semantics. Its domain is MmemRange x MinValue. *)
   type astate = { it : FAbs.t ItMap.t;
                   abs_std : AbsDomStd.t; (* standard semantics *)
                   abs_spc : AbsDomSpc.t; (* speculative semantics *)
+                  abs_dead_spc : AbsDomSpc.t;
                   spec_analysis : bool;  
                   cstack : funname list;
                   env : s_env;
@@ -5642,9 +5662,13 @@ end = struct
             AbsDomStd.assign_sexpr abs y sexpr)
           abs f_args f_in_args in
 
+      (* Initially, the two semantics coincide. *)
+      let abs_spc = std_to_spc abs in
+
       { it = it;
         abs_std = abs;
-        abs_spc = std_to_spc abs; (* initially, the two semantics coincide. *)
+        abs_spc = abs_spc;
+        abs_dead_spc = spc_to_dead_spc abs_spc;
         spec_analysis = true;
         cstack = [main_decl.f_name];
         env = env;
@@ -6044,6 +6068,7 @@ end = struct
                   abs_spc = state.abs_spc; (* in a standard semantics-only 
                                               analysis, this value does not
                                               matter. *)
+                  abs_dead_spc = state.abs_dead_spc; (* idem *)
                   spec_analysis = false;
                   it = fstate.it;
                   env = state.env;
@@ -6520,9 +6545,9 @@ end = struct
   (* -------------------------------------------------------------------- *)
   let num_instr_evaluated = ref 0
 
-  let print_ginstr ~print_spc ginstr (std,spc) =
+  let print_ginstr ~print_spc ginstr abs_vals =
     Format.eprintf "@[<v>@[<v>%a@]@;*** %d Instr: %a %a@;@;@]%!"
-      (AbsDom2.print ~print_spc:print_spc) (std,spc)
+      (AbsDom2.print ~print_spc:print_spc) abs_vals
       (let a = !num_instr_evaluated in incr num_instr_evaluated; a)
       L.pp_sloc (fst ginstr.i_loc)
       (Printer.pp_instr ~debug:false) ginstr
@@ -6566,12 +6591,12 @@ end = struct
       fname
       L.pp_sloc (fst ginstr.i_loc)
 
-  let std_spc state = (state.abs_std, state.abs_spc)
+  let abs_vals state = (state.abs_std, state.abs_spc, state.abs_dead_spc)
 
   let rec aeval_ginstr : ('ty,'info) ginstr -> astate -> astate =
     fun ginstr state ->
       debug (fun () ->
-        print_ginstr ~print_spc:state.spec_analysis ginstr (std_spc state));
+        print_ginstr ~print_spc:state.spec_analysis ginstr (abs_vals state));
 
       (* We stop if the abstract state is bottom *)
       if AbsDomStd.is_bottom state.abs_std &&
@@ -6615,39 +6640,12 @@ end = struct
 
       | Copn(lvs, _, Expr.Ox86 (X86_instr_decl.LFENCE), es) ->
         assert (lvs = [] && es = []);
-        (* We build the new speculative abstract state.
-           We want to have the memory accesses of the speculative semantics, 
-           and the program state of the standard semantics. *)
-        let env_spc = AbsDomSpc.get_env state.abs_spc in
-        let env_std = AbsDomSpc.get_env state.abs_spc in
-
-        (* For the standard abstract value, we forget the memory access 
-           variables. *)
-        let forget_std =
-          fst (Environment.vars env_std)
-          |> Array.to_list
-          |> List.filter_map (fun v ->
-              match mvar_of_avar v with
-              | MmemRange _ as mv -> Some mv
-              | Mglobal _| MinValue _ | Mvalue _ | MvarOffset _ -> None
-              | MNumInv _ | Temp _ | WTemp _ -> assert false) in
-        let abs_spc1 = AbsDomStd.forget_list state.abs_std forget_std
-                       |> std_to_spc in
-
-        (* For the speculative abstract value, we forget everything
-           except the memory access variables, and the variables initial
-           values. *)
-        let forget_spc =
-          fst (Environment.vars env_spc)
-          |> Array.to_list
-          |> List.filter_map (fun v ->
-              match mvar_of_avar v with
-              | Mglobal _ | MinValue _ | MmemRange _ -> None
-              | Mvalue _ | MvarOffset _ as mv -> Some mv
-              | MNumInv _ | Temp _ | WTemp _ -> assert false) in
-        let abs_spc2 = AbsDomSpc.forget_list state.abs_spc forget_spc in
+        (* We update [abs_dead_spc] with the memory accesses of [abs_spc] *)
+        let abs_dead_spc2 = spc_to_dead_spc state.abs_spc in
+        let abs_dead_spc = AbsDomSpc.join state.abs_dead_spc abs_dead_spc2 in
         
-        { state with abs_spc = AbsDomSpc.meet abs_spc1 abs_spc2 };
+        { state with abs_spc = std_to_spc state.abs_std;
+                     abs_dead_spc = abs_dead_spc; };
 
       | Copn (lvs,_,opn,es) ->
         (* Remark: the assignments must be done in the correct order. *)
@@ -6713,7 +6711,7 @@ end = struct
                   Format.eprintf "@[<v 2>Checking the numerical quantity in:@;\
                                   %a@]@."
                     (AbsDom2.print ~print_spc:false) (* only std semantics *)
-                    (std_spc state_in));
+                    (abs_vals state_in));
 
               let int = AbsDomStd.bound_texpr state_in.abs_std e
               and zint = AbsDomStd.bound_variable state_in.abs_std mvar_ni
@@ -6768,14 +6766,17 @@ end = struct
 
           let abs_r_std = AbsDomStd.join state.abs_std state_o.abs_std in
           let abs_r_spc = AbsDomSpc.join state.abs_spc state_o.abs_spc in
+          let abs_r_dead_spc =
+            AbsDomSpc.join state.abs_dead_spc state_o.abs_dead_spc in
           debug (fun () ->
               print_while_join ~print_spc:state.spec_analysis
                 cpt_instr 
-                (std_spc state)
-                (std_spc  state_o) 
-                (abs_r_std,abs_r_spc));
+                (abs_vals state)
+                (abs_vals  state_o) 
+                (abs_r_std, abs_r_spc, abs_r_dead_spc));
           { state_o with abs_std = abs_r_std; 
-                         abs_spc = abs_r_spc;} in
+                         abs_spc = abs_r_spc;
+                         abs_dead_spc = abs_r_dead_spc; } in
 
         let enter_loop state =
           debug (fun () -> Format.eprintf "Loop %d@;" !cpt);
@@ -6840,19 +6841,24 @@ end = struct
               AbsDomStd.widening
                 (smpl_thrs state.abs_std) (* this is used as a threshold *)
                 state.abs_std state'.abs_std in
+
+            (* no threshold from the loop condition for the speculative
+               semantics *)
             let w_abs_spc =
-              AbsDomSpc.widening
-                None            (* no threshold here from the loop condition
-                                   for the speculative semantics *)
-                state.abs_spc state'.abs_spc in
+              AbsDomSpc.widening None state.abs_spc state'.abs_spc in
+            let w_abs_dead_spc =
+              AbsDomSpc.widening None state.abs_dead_spc state'.abs_dead_spc in
             debug(fun () ->
                 print_while_widening ~print_spc:state.spec_analysis
                   cpt_instr
-                  (std_spc state)
-                  (std_spc state')
-                  (w_abs_std,w_abs_spc));
-            stabilize { state' with abs_std = w_abs_std;
-                                    abs_spc = w_abs_spc; } (Some state) in
+                  (abs_vals state)
+                  (abs_vals state')
+                  (w_abs_std,w_abs_spc,w_abs_dead_spc));
+            stabilize
+              { state' with abs_std = w_abs_std;
+                            abs_spc = w_abs_spc;
+                            abs_dead_spc = w_abs_dead_spc; }
+              (Some state) in
 
         let rec stabilize_b state_i pre_state =
           let cpt_i = !num_instr_evaluated - 1 in
@@ -6866,19 +6872,24 @@ end = struct
               AbsDomStd.widening
                 (smpl_thrs state_i.abs_std) (* this is used as a threshold *)
                 state_i.abs_std state_i'.abs_std in
+
+            (* no threshold here from the loop condition for the
+               speculative semantics *)
             let w_abs_spc =
-              AbsDomSpc.widening
-                None            (* no threshold here from the loop condition
-                                   for the speculative semantics *)
-                state_i.abs_spc state_i'.abs_spc in
+              AbsDomSpc.widening None state_i.abs_spc state_i'.abs_spc in
+            let w_abs_dead_spc =
+              AbsDomSpc.widening None state_i.abs_dead_spc state_i'.abs_dead_spc in
             debug(fun () ->
                 print_while_widening ~print_spc:state.spec_analysis
                   cpt_i
-                  (std_spc state_i)
-                  (std_spc state_i')
-                  (w_abs_std, w_abs_spc));
-            stabilize_b { state_i' with abs_std = w_abs_std; 
-                                        abs_spc = w_abs_spc;} state in
+                  (abs_vals state_i)
+                  (abs_vals state_i')
+                  (w_abs_std, w_abs_spc,w_abs_dead_spc));
+            stabilize_b
+              { state_i' with abs_std = w_abs_std; 
+                              abs_spc = w_abs_spc;
+                              abs_dead_spc = w_abs_dead_spc; }
+              state in
 
         (* We first unroll the loop k_unroll times. We then stabilize the
            abstraction (in finite time) using AbsDom.widening.
@@ -6907,7 +6918,7 @@ end = struct
 
         debug(fun () ->
             print_return ~print_spc:state.spec_analysis
-              ginstr (std_spc fstate) fn.fn_name);
+              ginstr (abs_vals fstate) fn.fn_name);
 
         return_call state callsite fstate lvs
 
@@ -7092,16 +7103,18 @@ end = struct
     let rstate = aeval_gstmt c2 { lstate with abs_std = rabs_std;
                                               abs_spc = rabs_spc; } in
 
-    let abs_res_std = AbsDomStd.join lstate.abs_std rstate.abs_std in
-    let abs_res_spc = AbsDomSpc.join lstate.abs_spc rstate.abs_spc in
+    let abs_res_std     = AbsDomStd.join lstate.abs_std rstate.abs_std 
+    and abs_res_spc     = AbsDomSpc.join lstate.abs_spc rstate.abs_spc 
+    and abs_res_dead_spc = AbsDomSpc.join lstate.abs_dead_spc rstate.abs_dead_spc in
     debug (fun () ->
         print_if_join ~print_spc:state.spec_analysis 
           cpt_instr ginstr 
-          (std_spc lstate) 
-          (std_spc rstate)
-          (abs_res_std, abs_res_spc));
-    { rstate with abs_std = abs_res_std;
-                  abs_spc = abs_res_spc; }
+          (abs_vals lstate) 
+          (abs_vals rstate)
+          (abs_res_std, abs_res_spc, abs_res_dead_spc));
+    { rstate with abs_std     = abs_res_std;
+                  abs_spc     = abs_res_spc;
+                  abs_dead_spc = abs_res_dead_spc; }
 
   and aeval_body f_body state =
     debug (fun () -> Format.eprintf "Evaluating the body ...@.@.");
@@ -7116,7 +7129,7 @@ end = struct
         if gstmt <> [] then
           Format.eprintf "%a%!"
             (AbsDom2.print ~print_spc:state.spec_analysis) 
-            (std_spc state)) in
+            (abs_vals state)) in
     state
 
   (* Select the call strategy for [f_decl] in [st_in] *)
@@ -7153,7 +7166,7 @@ end = struct
     debug(fun () -> Format.eprintf
              "@[<v 0>@;Final offsets full abstract value:@;@[%a@]@]@."
              (AbsDom2.print ~print_spc:state.spec_analysis) 
-             (std_spc state))
+             (abs_vals state))
 
   let print_var_interval_std state fmt mvar =
     let int_std = AbsDomStd.bound_variable state.abs_std mvar in
@@ -7187,12 +7200,13 @@ end = struct
         (AbsDomSpc.forget_list state.abs_spc rem_vars) 
         L._dummy                (* We use L._dummy for the initial block *)
     in
+    let abs_proj_dead_spc = AbsDomSpc.forget_list state.abs_dead_spc rem_vars in
 
     let sb = !only_rel_print in (* Not very clean *)
     only_rel_print := true;
     Format.fprintf fmt "@[%a@]"
       (AbsDom2.print ~print_spc:state.spec_analysis)
-      (abs_proj_std, abs_proj_spc);
+      (abs_proj_std, abs_proj_spc, abs_proj_dead_spc);
     only_rel_print := sb
 
 
