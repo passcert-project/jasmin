@@ -218,6 +218,10 @@ fn sum_states_store(
   aux = (64u)k[0];
   kk[0] ^= aux;
   plain = s_plain;
+  // we reset plain to its initial value if we misspeculated
+	// (this rely on the fact that s_len0 is at least 64
+  plain   = s_plain0  if len < 64;
+
   kk[0] ^= (u64)[plain + 8*0];
 
   // i = 1 : 2 dead
@@ -229,6 +233,11 @@ fn sum_states_store(
   kk[1] ^= aux;
   kk[1] ^= (u64)[plain + 8*1];
   output = s_output;
+	// we reset output and len their initial values if we misspeculated
+	// (this rely on the fact that s_len0 is at least 64
+  output  = s_output0 if len < 64;
+  len     = s_len0    if len < 64;
+
   (u64)[output + 8*0] = kk[0];
   for i=2 to 8
   {
@@ -248,12 +257,6 @@ fn sum_states_store(
   len = s_len;
 
   output, plain, len = update_ptr(output, plain, len, 64);
-
-  // we reset output and plain to their initial values if we misspeculated
-	// (this must be done while they are still stored in registers)
-  output  = s_output0 if len < 128;
-  plain   = s_plain0  if len < 128;
-  len     = s_len0    if len < 128;
 
   s_output = output;
   s_plain = plain;
@@ -336,18 +339,23 @@ export fn chacha20_ref(reg u64 output plain, reg u32 len, reg u64 key nonce, reg
   s_plain0 = plain;
   s_len0 = len;
 
+  // we ensure that the stored values in the stack are correct
   #LFENCE;
 	
   st = init(key, nonce, counter);
-  while
-  (s_len >= 64)
-  {
-
-    k, k15 = copy_state(st);
-    k, k15 = rounds(k, k15);
-    s_output, s_plain, s_len = sum_states_store(s_output0, s_plain0, s_len0, s_output, s_plain, s_len, k, k15, st); 
-    st = increment_counter(st);
-  }
+	if (s_len >= 64) {
+	  // we ensure that s_len is at least 64
+	  #LFENCE;
+    while
+    {
+	  
+      k, k15 = copy_state(st);
+      k, k15 = rounds(k, k15);
+      s_output, s_plain, s_len = sum_states_store(s_output0, s_plain0, s_len0, s_output, s_plain, s_len, k, k15, st); 
+      st = increment_counter(st);
+    }
+		(s_len >= 64)
+	}
   if(s_len > 0)
   {
     k, k15 = copy_state(st);
