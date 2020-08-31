@@ -960,7 +960,7 @@ fn chacha20_more_than_256(reg u64 output plain, reg u32 len, reg u64 key nonce, 
   if (len >= 512){
 	  // we ensure that len is at least 512
 	  #LFENCE;
-    {
+		while {
 		  // we reset output, plain and len to their initial values if we
 		  // misspeculated
       output  = s_output if len < 512;
@@ -972,8 +972,7 @@ fn chacha20_more_than_256(reg u64 output plain, reg u32 len, reg u64 key nonce, 
       k = sum_states_x8(k, st);
       output, plain, len = store_x8(output, plain, len, k);
       st = increment_counter_x8(st);
-    }
-    while(len >= 512)
+    }(len >= 512)
   }
 
   if(len > 0)
