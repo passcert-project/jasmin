@@ -1544,16 +1544,50 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
   let top_man man a = Abstract1.top man (Abstract1.env a)
   let top = top_man man
 
-  (* v and v_list should not contain Mvalue (AarrayEl) elements *)
+  let check_u8 vs =
+    assert (List.for_all (function
+        | Mvalue (AarrayEl (_,ws,_)) -> ws = U8
+        | _ -> true) vs)
+      
+  (* v and v_list should not contain Mvalue (AarrayEl) elements
+     of size different than U8. *)
   let expand_man man a v v_list =
+    check_u8 (v :: v_list);
     let v_array = Array.of_list (List.map avar_of_mvar v_list) in
     Abstract1.expand man a (avar_of_mvar v) v_array
 
-  (* v and v_list should not contain Mvalue (AarrayEl) elements *)
+  (* v_list should not contain Mvalue (AarrayEl) elements
+     of size different than U8. *)
   let fold_man man a v_list =
-    let v_array = Array.of_list (List.map avar_of_mvar v_list) in
-    Abstract1.fold man a v_array
+    check_u8 (v_list);
+    (* PPL implementation of the fold operation is bugged. *)   
+    (* let v_array = Array.of_list (List.map avar_of_mvar v_list) in 
+     * Abstract1.fold man a v_array *)
 
+    (* We do it instead using assignments and joins. *)
+    let v, vs = match List.map avar_of_mvar v_list with
+      | v :: vs -> v, vs
+      | [] -> raise (Failure "fold_man: empty list") in
+    let env = Abstract1.env a in
+    
+    let ass = List.map (fun v' ->
+        let ev' = Texpr1.of_expr env (Texpr1.Var v') in
+        Abstract1.assign_texpr man a v ev' None) vs in
+    let arr = Array.of_list (a :: ass) in
+    let a = Abstract1.join_array man arr in
+
+    (* We remove the variables [vs]. *)
+    let vars = Environment.vars env
+               |> fst
+               |> Array.to_list in
+    let nvars = List.filter (fun x -> not (List.mem x vs)) vars
+                |> Array.of_list
+    and empty_var_array = Array.make 0 (Var.of_string "") in
+
+    let new_env = Environment.make nvars empty_var_array in
+    Abstract1.change_environment man a new_env false
+
+  
   let expand a v v_list = expand_man man a v v_list
 
   let fold a v_list = fold_man man a v_list
@@ -1721,7 +1755,7 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
 
       let pp_abs fmt v =
         let vi = Abstract1.bound_variable man a v in
-        Format.fprintf fmt "@[%s: %a@]"
+        Format.fprintf fmt "@[%s ∊ %a@]"
           (Var.to_string v)
           Interval.print vi in
 
