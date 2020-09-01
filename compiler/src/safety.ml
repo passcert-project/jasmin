@@ -128,7 +128,7 @@ module Aparam = struct
   type init_print = IP_None | IP_NoArray | IP_All
   (* Turn on printing of not initialized variables 
      (i.e. it is not certain that the variable is initialized). *)
-  let is_init_no_print = IP_NoArray   (* defaul: IP_None *)
+  let is_init_no_print = IP_None   (* defaul: IP_None *)
 
   (* Turn on printing of boolean variables *)
   let bool_no_print = true   (* defaul: true *)
@@ -2415,110 +2415,226 @@ let pp_cnstrs fmt =
     (pp_list ~sep:(fun fmt () -> Format.fprintf fmt ";@ ") pp_cnstr)
 
 module Ptree = struct
+  (* Trace partitionning, where:
+     - [constr] is a constraint, comprising a linear constraint and a 
+     program point.
+     - [n_true] and [n_false] are abstract states over-approximating traces 
+     that went through the constraint, and where it evaluated to, 
+     respectively, true and false.  
+     - [n_unknwn] over-approximates traces that did not go through the 
+     constraint. *)
+  type 'a node = { constr   : cnstr;
+                n_true   : 'a;
+                n_false  : 'a;
+                n_unknwn : 'a; }
+  
   type 'a t =
-    | Node of cnstr * 'a t * 'a t
+    | Node of 'a t node
     | Leaf of 'a
 
 
   let rec pp_ptree pp_leaf fmt = function
     | Leaf x -> pp_leaf fmt x
-    | Node (c,Leaf x,Leaf r) ->
+    | Node ({ n_true = Leaf nt;
+              n_false = Leaf nf;
+              n_unknwn = Leaf nu;} as node) ->
       Format.fprintf fmt "@[<v 0>@[<v 2># @[%a@] :@;\
                           @[%a@]@]@;\
-                          @[<v 2># :@;\
+                          @[<v 2># NOT @[%a@] :@;\
+                          @[%a@]@]@;\
+                          @[<v 2># UNKNOWN @[%a@] :@;\
                           @[%a@]@]@;@]"
-        pp_cnstr c
-        pp_leaf x
-        pp_leaf r
+        pp_cnstr node.constr
+        pp_leaf nt
+        pp_cnstr node.constr
+        pp_leaf nf
+        pp_cnstr node.constr
+        pp_leaf nu
 
-    | Node (c,l,r) ->
+    | Node node ->
       Format.fprintf fmt "@[<v 0>\
                           @[<v 2># @[%a@] :@;\
                           @[%a@]@]@;\
-                          @[<v 2># :@;\
+                          @[<v 2># NOT @[%a@] :@;\
+                          @[%a@]@]@;\
+                          @[<v 2># UNKNOWN @[%a@] :@;\
                           @[%a@]@]@;@]"
-        pp_cnstr c
-        (pp_ptree pp_leaf) l
-        (pp_ptree pp_leaf) r
+        pp_cnstr node.constr
+        (pp_ptree pp_leaf) node.n_true
+        pp_cnstr node.constr
+        (pp_ptree pp_leaf) node.n_false
+        pp_cnstr node.constr
+        (pp_ptree pp_leaf) node.n_unknwn
 
   let flip c = flip_constr c |> otolist
 
   let rec same_shape t1 t2 = match t1, t2 with
-    | Node (c1,l1,r1), Node (c2,l2,r2) when c1 = c2 ->
-      (same_shape l1 l2) && (same_shape r1 r2)
+    | Node n1, Node n2 -> same_shape_n n1 n2
     | Leaf _, Leaf _ -> true
     | _ -> false
 
-  let apply (f : Mtcons.t list -> 'a -> 'b) (t : 'a t) =
-    let rec aux cs t = match t with
-      | Node (c,l,r) -> Node (c,
-                              aux (c.mtcons :: cs) l,
-                              aux (flip c.mtcons @ cs ) r)
-      | Leaf x -> Leaf (f cs x) in
-    aux [] t
+  and same_shape_n n1 n2 =
+    n1.constr.cpt_uniq = n2.constr.cpt_uniq &&
+    same_shape n1.n_true n2.n_true &&
+    same_shape n1.n_false n2.n_false &&
+    same_shape n1.n_unknwn n2.n_unknwn
+    
+  let apply (f : 'a -> 'b) (t : 'a t) =
+    let rec aux t = match t with
+      | Node { constr = c; n_true = nt; n_false = nf; n_unknwn = nu; }
+        -> Node { constr   = c;
+                  n_true   = aux nt;
+                  n_false  = aux nf;
+                  n_unknwn = aux nu; } 
+      | Leaf x -> Leaf (f x) in
+    aux t
 
+    (* let apply (f : Mtcons.t list -> 'a -> 'b) (t : 'a t) =
+     * let rec aux cs t = match t with
+     *   | Node { constr = c; n_true = nt; n_false = nf; n_unknwn = nu; }
+     *     -> Node { constr = c;
+     *               n_true = aux (c.mtcons :: cs) nt;
+     *               n_false = aux (flip c.mtcons @ cs ) nf;
+     *               n_unknwn = nu; } (\* TODO: fixme ! *\)
+     *   | Leaf x -> Leaf (f cs x) in
+     * aux [] t *)
+      
   let apply2_merge (fmerge : 'a t -> 'b t -> ('a t * 'b t))
-      (f : Mtcons.t list -> 'a -> 'b -> 'c) t1 t2 =
-    let rec aux cs t1 t2 = match t1,t2 with
-      | Node (c1,l1,r1), Node (c2,l2,r2) when c1 = c2 ->
-        Node (c1,
-              aux (c1.mtcons :: cs) l1 l2,
-              aux (flip c1.mtcons @ cs) r1 r2)
-      | Leaf x1, Leaf x2 -> Leaf (f cs x1 x2)
+      (f : 'a -> 'b -> 'c) t1 t2 =
+    let rec aux t1 t2 = match t1,t2 with
+      | Node { constr = c ; n_true = nt ; n_false = nf ; n_unknwn = nu ; },
+        Node { constr = c'; n_true = nt'; n_false = nf'; n_unknwn = nu'; }
+        when c.cpt_uniq = c'.cpt_uniq ->
+        Node { constr   = c;
+               n_true   = aux nt nt';
+               n_false  = aux nf nf';
+               n_unknwn = aux nu nu'; }
+
+      | Leaf x1, Leaf x2 -> Leaf (f x1 x2)
       | _ -> raise (Aint_error "Ptree: Shape do not match") in
 
     let t1, t2 = if same_shape t1 t2 then t1,t2 else fmerge t1 t2 in
 
-    aux [] t1 t2
+    aux t1 t2
 
-  let apply_list (f : Mtcons.t list -> 'a list -> 'b) ts =
-    let rec aux cs ts = match ts with
+    (* let apply2_merge (fmerge : 'a t -> 'b t -> ('a t * 'b t))
+     *   (f : Mtcons.t list -> 'a -> 'b -> 'c) t1 t2 =
+     * let rec aux cs t1 t2 = match t1,t2 with
+     *   | Node { constr = c ; n_true = nt ; n_false = nf ; n_unknwn = nu ; },
+     *     Node { constr = c'; n_true = nt'; n_false = nf'; n_unknwn = nu'; }
+     *     when c.cpt_uniq = c'.cpt_uniq ->
+     *     Node { constr = c;
+     *            n_true = aux nt nt';
+     *            n_false = aux nf nf';
+     *            n_unknwn = aux nu nu'; }
+     * 
+     *   | Leaf x1, Leaf x2 -> Leaf (f cs x1 x2)
+     *   | _ -> raise (Aint_error "Ptree: Shape do not match") in
+     * 
+     * let t1, t2 = if same_shape t1 t2 then t1,t2 else fmerge t1 t2 in
+     * 
+     * aux [] t1 t2 *)
+
+  let apply_list (f : 'a list -> 'b) ts =
+    let rec aux ts = match ts with
       | [] -> raise (Aint_error "Ptree: apply_l empty list")
-      | Node (c,_,_) :: _ -> aux_node c cs ts [] []
-      | Leaf _ :: _ -> aux_leaf cs ts []
+      | Node { constr = c; } :: _ ->
+        aux_node c ts [] [] []
+      | Leaf _ :: _ -> aux_leaf ts []
 
-    and aux_node c cs ts lts rts = match ts with
-      | Node (c',l,r) :: ts' when c = c' ->
-        aux_node c cs ts' (l :: lts) (r :: rts)
-      | [] -> Node (c,
-                    aux (c.mtcons :: cs) lts,
-                    aux (flip c.mtcons @ cs ) rts)
+    and aux_node c ts tts fts uts = match ts with
+      | Node { constr = c'; n_true = nt; n_false = nf; n_unknwn = nu; } :: ts'
+        when c.cpt_uniq = c'.cpt_uniq ->
+        aux_node c ts' (nt :: tts) (nf :: fts) (nu :: uts)
+      | [] -> Node { constr   = c;
+                     n_true   = aux tts;
+                     n_false  = aux fts;
+                     n_unknwn = aux uts; }
       | _ -> raise (Aint_error "Ptree: aux_node bad shape")
 
-    and aux_leaf cs ts xts = match ts with
-      | Leaf x :: ts' -> aux_leaf cs ts' (x :: xts)
-      | [] -> Leaf (f cs xts)
+    and aux_leaf ts xts = match ts with
+      | Leaf x :: ts' -> aux_leaf ts' (x :: xts)
+      | [] -> Leaf (f xts)
       | _ -> raise (Aint_error "Ptree: aux_leaf bad shape") in
 
-    aux [] ts
+    aux ts
 
-  let eval (fn : cnstr -> 'a -> 'a -> 'a)
-      (fl : Mtcons.t list -> 'b -> 'a)
+    (* let apply_list (f : Mtcons.t list -> 'a list -> 'b) ts =
+     * let rec aux cs ts = match ts with
+     *   | [] -> raise (Aint_error "Ptree: apply_l empty list")
+     *   | Node (c,_,_) :: _ -> aux_node c cs ts [] []
+     *   | Leaf _ :: _ -> aux_leaf cs ts []
+     * 
+     * and aux_node c cs ts lts rts = match ts with
+     *   | Node (c',l,r) :: ts' when c = c' ->
+     *     aux_node c cs ts' (l :: lts) (r :: rts)
+     *   | [] -> Node (c,
+     *                 aux (c.mtcons :: cs) lts,
+     *                 aux (flip c.mtcons @ cs ) rts)
+     *   | _ -> raise (Aint_error "Ptree: aux_node bad shape")
+     * 
+     * and aux_leaf cs ts xts = match ts with
+     *   | Leaf x :: ts' -> aux_leaf cs ts' (x :: xts)
+     *   | [] -> Leaf (f cs xts)
+     *   | _ -> raise (Aint_error "Ptree: aux_leaf bad shape") in
+     * 
+     * aux [] ts *)
+
+  let eval (fn : cnstr -> 'a -> 'a -> 'a -> 'a)
+      (fl : 'b -> 'a)
       (t : 'b t) =
-    let rec aux cs = function
-      | Node (c,l,r) ->
-        fn c (aux (c.mtcons :: cs) l) (aux (flip c.mtcons @ cs) r)
-      | Leaf x -> fl cs x in
-    aux [] t
+    let rec aux = function
+      | Node { constr = c; n_true = nt; n_false = nf; n_unknwn = nu; } ->
+        fn c (aux nt) (aux nf) (aux nu)
+      | Leaf x -> fl x in
+    aux t
 
   let eval2_merge (fmerge : 'b t -> 'c t -> ('b t * 'c t))
-      (fn : Mtcons.t list -> 'a -> 'a -> 'a)
-      (fl : Mtcons.t list -> 'b -> 'c -> 'a)
+      (fn : cnstr -> 'a -> 'a -> 'a -> 'a)
+      (fl : 'b -> 'c -> 'a)
       (t1 : 'b t) (t2 : 'c t) =
-    let rec aux cs t1 t2 = match t1,t2 with
-      | Node (c1,l1,r1), Node (c2,l2,r2) when c1 = c2 ->
-        fn cs (aux (c1.mtcons :: cs) l1 l2) (aux (flip c1.mtcons @ cs) r1 r2)
-      | Leaf x1, Leaf x2 -> fl cs x1 x2
+    let rec aux t1 t2 = match t1,t2 with
+      | Node { constr = c ; n_true = nt ; n_false = nf ; n_unknwn = nu ; },
+        Node { constr = c'; n_true = nt'; n_false = nf'; n_unknwn = nu'; }
+        when c.cpt_uniq = c'.cpt_uniq ->
+        fn c (aux nt nt') (aux nf nf') (aux nu nu')
+      | Leaf x1, Leaf x2 -> fl x1 x2
       | _ -> raise (Aint_error "Ptree: eval2 : shape do not match") in
 
     let t1, t2 = if same_shape t1 t2 then t1,t2 else fmerge t1 t2 in
 
-    aux [] t1 t2
+    aux t1 t2
 
-  let ptree_size = eval (fun _ a b -> a + b) (fun _ _ -> 1)
+
+  (*   let eval (fn : cnstr -> 'a -> 'a -> 'a)
+   *     (fl : Mtcons.t list -> 'b -> 'a)
+   *     (t : 'b t) =
+   *   let rec aux cs = function
+   *     | Node (c,l,r) ->
+   *       fn c (aux (c.mtcons :: cs) l) (aux (flip c.mtcons @ cs) r)
+   *     | Leaf x -> fl cs x in
+   *   aux [] t
+   * 
+   * let eval2_merge (fmerge : 'b t -> 'c t -> ('b t * 'c t))
+   *     (fn : Mtcons.t list -> 'a -> 'a -> 'a)
+   *     (fl : Mtcons.t list -> 'b -> 'c -> 'a)
+   *     (t1 : 'b t) (t2 : 'c t) =
+   *   let rec aux cs t1 t2 = match t1,t2 with
+   *     | Node (c1,l1,r1), Node (c2,l2,r2) when c1 = c2 ->
+   *       fn cs (aux (c1.mtcons :: cs) l1 l2) (aux (flip c1.mtcons @ cs) r1 r2)
+   *     | Leaf x1, Leaf x2 -> fl cs x1 x2
+   *     | _ -> raise (Aint_error "Ptree: eval2 : shape do not match") in
+   * 
+   *   let t1, t2 = if same_shape t1 t2 then t1,t2 else fmerge t1 t2 in
+   * 
+   *   aux [] t1 t2 *)
+
+  let ptree_size = eval (fun _ a b c -> a + b + c) (fun _ -> 1)
 end
 
 
+(* Trace partitionning, see the description of the [node] type in 
+   the module [Ptree]. *)
 module type AbsDisjType = sig
   include AbsNumType
 
@@ -2621,24 +2737,46 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
   let cnstrs_list l = 
     List.map (fun x -> x.cblk_cnstrs) l |> List.rev |> List.flatten
 
+  let add_constr_unknwn c t =
+    Ptree.Node { constr   = c;
+                 n_true   = Ptree.apply A.bottom t;
+                 n_false  = Ptree.apply A.bottom t;
+                 n_unknwn = t; }
+      
+    
+  (* Merge two blocks [t] and [t']. If a constraint [c] appears on the left
+     but node on the right, replace [t'] by
+     [Node { constr = c; n_true = bottom; n_false = bottom; n_unknwn = t'] *)
   let rec merge_blck mcs t t' = match mcs, t, t' with
     | [], Ptree.Leaf _, Ptree.Leaf _ -> t, t'
-    | c0 :: mcs', Ptree.Node (c, tl, tr), Ptree.Node (c',tl',tr') ->
+    | c0 :: mcs',
+      Node { constr = c ; n_true = nt ; n_false = nf ; n_unknwn = nu ; },
+      Node { constr = c'; n_true = nt'; n_false = nf'; n_unknwn = nu'; } ->
       if equal c c' && equal c c0 then
-        let mtl,mtl' = merge_blck mcs' tl tl'
-        and mtr,mtr' = merge_blck mcs' tr tr' in
-        ( Ptree.Node (c, mtl, mtr), Ptree.Node (c,mtl', mtr') )
-      else if equal c c0 then merge_blck mcs t (Ptree.Node (c,t', t'))
-      else if equal c' c0 then merge_blck mcs (Ptree.Node (c,t, t)) t'
+        let mnt,mnt' = merge_blck mcs' nt nt'
+        and mnf,mnf' = merge_blck mcs' nf nf'
+        and mnu,mnu' = merge_blck mcs' nu nu' in
+        ( Ptree.Node { constr   = c;
+                       n_true   = mnt;
+                       n_false  = mnf;
+                       n_unknwn = mnu; },
+          Ptree.Node { constr   = c;
+                       n_true   = mnt';
+                       n_false  = mnf';
+                       n_unknwn = mnu'; } )
+      else if equal c c0
+      then merge_blck mcs t (add_constr_unknwn c t')
+      else if equal c' c0
+      then merge_blck mcs (add_constr_unknwn c t) t'
       else raise (Aint_error "merge_blck: bad shape")
 
-    | c0 :: _, Ptree.Node (c, _,_), Ptree.Leaf _ ->
+    | c0 :: _, Node { constr = c; }, Ptree.Leaf _ ->
       assert (equal c0 c);
-      merge_blck mcs t (Ptree.Node (c,t', t'))
+      merge_blck mcs t (add_constr_unknwn c t')
 
-    | c0 :: _, Ptree.Leaf _, Ptree.Node (c', _,_) ->
+    | c0 :: _, Ptree.Leaf _, Node { constr = c'; } ->
       assert (equal c0 c');
-      merge_blck mcs (Ptree.Node (c',t, t)) t'
+      merge_blck mcs (add_constr_unknwn c' t) t'
 
     | _ -> raise (Aint_error "merge_blck: bad shape")
 
@@ -2646,30 +2784,41 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
     | [] -> merge_blck mcs t t'
     | c0 :: l' ->
       match t,t' with
-      | Ptree.Node (c,tl,tr), Ptree.Node (c',tl',tr')
+      | Ptree.Node {constr = c ; n_true = nt ; n_false = nf ; n_unknwn = nu ;},
+        Ptree.Node {constr = c'; n_true = nt'; n_false = nf'; n_unknwn = nu';} 
         when equal c c' && equal c c0 ->
-        let mtl,mtl' = merge_last_blck mcs tl tl' l'
-        and mtr,mtr' = merge_last_blck mcs tr tr' l' in
-        Ptree.Node (c, mtl, mtr), Ptree.Node (c,mtl', mtr')
+        let mnt,mnt' = merge_last_blck mcs nt nt' l'
+        and mnf,mnf' = merge_last_blck mcs nf nf' l'
+        and mnu,mnu' = merge_last_blck mcs nu nu' l' in
+        ( Ptree.Node {constr   = c ;
+                      n_true   = mnt ;
+                      n_false  = mnf ;
+                      n_unknwn = mnu ;},
+          Ptree.Node {constr   = c;
+                      n_true   = mnt';
+                      n_false  = mnf';
+                      n_unknwn = mnu';} )
       | _ -> assert false
+
+  let tmerge_check cs l cs' l' =
+    if not (List.for_all2 cblk_equal l l') then begin
+      Format.eprintf "error tmerg:@;l:@;%a@.l':@;%a@."
+        pp_cblks l
+        pp_cblks  l';
+      assert false
+    end;
+    if not (cs.cblk_loc = cs'.cblk_loc) then begin
+      Format.eprintf "%a and %a"
+        L.pp_sloc cs.cblk_loc L.pp_sloc cs'.cblk_loc;
+      assert false
+    end
 
   let tmerge t t' =
     if same_shape t t' then t, t'
     else match t.cnstrs, t'.cnstrs with
       | [], [] -> t,t'
       | cs :: l, cs' :: l' ->
-        if not (List.for_all2 cblk_equal l l') then begin
-          (* REM *)
-          Format.eprintf "error tmerg:@;l:@;%a@.l':@;%a@."
-            pp_cblks l
-            pp_cblks  l';
-          assert false
-        end;
-        if not (cs.cblk_loc = cs'.cblk_loc) then begin
-          Format.eprintf "%a and %a"
-            L.pp_sloc cs.cblk_loc L.pp_sloc cs'.cblk_loc;
-          assert false
-        end; 
+        tmerge_check cs l cs' l';
         let mcs_cnstrs = 
           List.sort_uniq compare (cs.cblk_cnstrs @ cs'.cblk_cnstrs) in
         let mcs = { cs with cblk_cnstrs = mcs_cnstrs } in
@@ -2679,9 +2828,14 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
         ( { tree = mt; cnstrs = mcs :: l }, { tree = mt'; cnstrs = mcs :: l } )
       | _ -> assert false
 
+  
   let apply f t = { t with tree = Ptree.apply f t.tree }
 
   let eval fn fl t = Ptree.eval fn fl t.tree
+
+  let bottom a = apply (fun x -> A.bottom x) a
+      
+  let top a = apply (fun x -> A.top x) a
 
   let apply2 f t t' =
     let t,t' = tmerge t t' in
@@ -2710,46 +2864,102 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
     let blk = { cblk_loc = l; cblk_cnstrs = [] } in
     { t with cnstrs = blk :: t.cnstrs }
 
-  let tbottom a = Ptree.apply (fun _ x -> A.bottom x) a
+  let tbottom a = Ptree.apply (fun x -> A.bottom x) a
 
+  let build_tree_pair c (mnt,mnt') (mnf,mnf') (mnu,mnu') =
+    ( Ptree.Node {constr   = c;
+                  n_true   = mnt;
+                  n_false  = mnf;
+                  n_unknwn = mnu;},
+      Ptree.Node {constr   = c;
+                  n_true   = mnt';
+                  n_false  = mnf';
+                  n_unknwn = mnu';} )
+    
   (* Insert the constraint in the current block at the correct place *)
   let rec add_cnstr_blck c t = match t with
     | Ptree.Leaf a ->
-      let ra = match flip_constr c.mtcons with
+      let nt = A.meet_constr a c.mtcons
+      and nf = match flip_constr c.mtcons with
         | None -> a
         | Some nc -> A.meet_constr a nc in
 
-      ( Ptree.Node (c,
-                    Ptree.Leaf (A.meet_constr a c.mtcons),
-                    Ptree.Leaf (A.bottom a)),
-        Ptree.Node (c,
-                    Ptree.Leaf (A.bottom a),
-                    Ptree.Leaf ra) )
+      ( Ptree.Node { constr   = c ;
+                     n_true   = Ptree.Leaf nt ;
+                     n_false  = Ptree.Leaf (A.bottom a) ;
+                     n_unknwn = Ptree.Leaf (A.bottom a) ;},
+        Ptree.Node { constr   = c ;
+                     n_true   = Ptree.Leaf (A.bottom a) ;
+                     n_false  = Ptree.Leaf nf ;
+                     n_unknwn = Ptree.Leaf (A.bottom a) ;} )
 
-    | Ptree.Node (c', tl, tr) ->
+    | Ptree.Node {constr = c' ; n_true = nt ; n_false = nf ; n_unknwn = nu ;} ->
       let cc = compare c c' in
+
+      (* [c] must be inserted above [c'] *)
       if cc = -1 then
-        let tl' = Ptree.apply (fun _ a -> A.meet_constr a c.mtcons) t
-        and tr' = Ptree.apply (fun _ a -> match flip_constr c.mtcons with
+        let nt' = Ptree.apply (fun a -> A.meet_constr a c.mtcons) t
+        and nf' = Ptree.apply (fun a -> match flip_constr c.mtcons with
             | None -> a
             | Some nc -> A.meet_constr a nc) t in
-        ( Ptree.Node (c, tl', tbottom t), Ptree.Node (c, tbottom t, tr') )
 
+      ( Ptree.Node { constr   = c ;
+                     n_true   = nt' ;
+                     n_false  = tbottom t ;
+                     n_unknwn = tbottom t ;},
+        Ptree.Node { constr   = c ;
+                     n_true   = tbottom t ;
+                     n_false  = nf' ;
+                     n_unknwn = tbottom t ;} )
+
+
+      (* [c] must be inserted below [c'] *)
       else if cc = 1 then
-        let fn c (mtl,mtl') (mtr,mtr') = ( Ptree.Node (c, mtl, mtr),
-                                           Ptree.Node (c, mtl', mtr') ) in
-        fn c' (add_cnstr_blck c tl) (add_cnstr_blck c tr)
+        build_tree_pair c'
+          (add_cnstr_blck c nt) (add_cnstr_blck c nf) (add_cnstr_blck c nu)
 
-      else raise (Aint_error "add_cnstr_blck: bad shape")
+      (* [c] and [c'] are equal. We need to consider cross-cases here.
+          c                       c      
+          |---- t                 |---- ⟦c⟧ ∪ ⟦c⟧u ∪ ⟦c⟧f
+          |---- u       ===>      |---- ⟂
+          |---- f                 |---- ⟦¬c⟧ ∪ ⟦¬c⟧u ∪ ⟦¬c⟧f
+         which we then split as follows:
+         c                                  c                         
+         |---- ⟦c⟧ ∪ ⟦c⟧u ∪ ⟦c⟧f            |---- ⟂
+         |---- ⟂                      and   |---- ⟂                   
+         |---- ⟂                            |---- ⟦¬c⟧ ∪ ⟦¬c⟧u ∪ ⟦¬c⟧f
+      *)
+      else
+        let nt' = Ptree.apply_list (fun l ->
+            let l = List.map (fun a -> A.meet_constr a c.mtcons) l in
+            A.join_list l
+          ) [nt; nf; nu]
+        and nf' = Ptree.apply_list (fun l ->
+            let l = List.map (fun a -> match flip_constr c.mtcons with
+                | None -> a
+                | Some nc -> A.meet_constr a nc) l in
+            A.join_list l
+          ) [nt; nf; nu] in
+        ( Ptree.Node { constr   = c;
+                       n_true   = nt';
+                       n_false  = tbottom nu;
+                       n_unknwn = tbottom nu; },
+          Ptree.Node { constr   = c;
+                       n_true   = tbottom nu;
+                       n_false  = nf';
+                       n_unknwn = tbottom nu; } )
 
   (* Go down to the last block in t and apply f, then inductively combine the
      results using fn *)
   let rec apply_last_blck fn f t l = match l,t with
     | [], _ -> f t
-    | c0 :: l', Ptree.Node (c, tl, tr) when equal c c0 ->
-      let mtl = apply_last_blck fn f tl l'
-      and mtr = apply_last_blck fn f tr l' in
-      fn c mtl mtr
+    | c0 :: l',
+      Ptree.Node { constr = c; n_true = nt; n_false = nf; n_unknwn = nu; }
+      when equal c c0 ->
+      let mnt = apply_last_blck fn f nt l'
+      and mnf = apply_last_blck fn f nf l'
+      and mnu = apply_last_blck fn f nu l' in
+      fn c mnt mnf mnu
 
     | _ -> raise (Aint_error "apply_last_blck: bad shape err3")
 
@@ -2757,33 +2967,40 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
     match t.cnstrs with
     | cs :: l ->     
       let cnstr = make_cnstr c loc in
-      let f x = add_cnstr_blck cnstr x
-      and fn c (mtl,mtl') (mtr,mtr') = ( Ptree.Node (c, mtl, mtr),
-                                         Ptree.Node (c, mtl', mtr') ) in
+      let f x = add_cnstr_blck cnstr x in
 
       let sorted_cnstrs = 
         List.sort_uniq compare (cnstr :: cs.cblk_cnstrs) in
       let nblk = { cs with cblk_cnstrs = sorted_cnstrs } in
       let ncs = nblk :: l in
-      let tl,tr = apply_last_blck fn f t.tree (cnstrs_list l) in
+      let tl,tr = apply_last_blck build_tree_pair f t.tree (cnstrs_list l) in
       ( { tree = tl; cnstrs = ncs }, { tree = tr; cnstrs = ncs } )
 
     | _ -> raise (Aint_error "add_cnstr: empty list")
 
   let pop_cnstr_blck t loc = match t.cnstrs with
     | blk :: l ->
+      (* This assert is to check that constraint blocks 'open' and 'close'
+         are properly nested. *)
       assert (blk.cblk_loc = loc);
       let f x =
-        let tree = Ptree.eval (fun _ a b -> A.join a b) (fun _ a -> a) x in
+        let tree =
+          Ptree.eval
+            (fun _ a1 a2 a3 -> A.join_list [a1; a2; a3])
+            (fun a -> a) x in
         Ptree.Leaf tree
-      and fn c mtl mtr = Ptree.Node (c, mtl, mtr) in
+      and fn c mnt mnf mnu = Ptree.Node {constr   = c;
+                                         n_true   = mnt;
+                                         n_false  = mnf;
+                                         n_unknwn = mnu; } in
 
       { tree =  apply_last_blck fn f t.tree (cnstrs_list l);
         cnstrs =  l }
     | _ -> raise (Aint_error "pop_cnstr_blck: empty list")
 
   let pop_all_blcks t = 
-    let a = Ptree.eval (fun _ a b -> A.join a b) (fun _ a -> a) t.tree in
+    let a = Ptree.eval
+        (fun _ a1 a2 a3 -> A.join_list [a1; a2; a3]) (fun a -> a) t.tree in
     make_abs a
 
   let meet_constr_ne (a : A.t) l =
@@ -2794,37 +3011,29 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
     match l_f with
     | [] -> a
     | _ :: _ -> A.meet_constr_list a l_f
-
-  (* All leaves should have the same environment *)
-  let get_env t =
-    let rec aux = function
-      | Ptree.Node (_,l,_) -> aux l
-      | Ptree.Leaf x -> A.get_env x in
-    aux t.tree
                       
   (* Make a top value defined on the given variables *)
   let make l = make_abs (A.make l)
 
-  let meet = apply2 (fun _ -> A.meet)
-  let meet_list = apply_list (fun _ -> A.meet_list)
+  let meet = apply2 A.meet
+  let meet_list = apply_list A.meet_list
 
-  let join = apply2 (fun _ -> A.join)
-  let join_list = apply_list (fun _ -> A.join_list)
+  let join = apply2 A.join
+  let join_list = apply_list A.join_list
 
-  let widening oc = apply2 (fun _ -> A.widening oc)
+  let widening oc = apply2 (A.widening oc)
 
-  let forget_list t l = apply (fun _ x -> A.forget_list x l) t
+  let forget_list t l = apply (fun x -> A.forget_list x l) t
 
-  let is_included = eval2 (fun _ l b -> l && b) (fun _ -> A.is_included)
-  let is_bottom = eval (fun _ l b -> l && b) (fun _ -> A.is_bottom)
-
-  let bottom a = apply (fun _ x -> A.bottom x) a
-
-  let top a = apply (fun _ x -> A.top x) a
+  let is_included = eval2 (fun _ a1 a2 a3 -> a1 && a2 && a3) A.is_included
+  let is_bottom = eval (fun _ a1 a2 a3 -> a1 && a2 && a3) A.is_bottom
 
   let rec get_leaf = function
-    | Ptree.Node (_,l,_) -> get_leaf l
+    | Ptree.Node { n_true = nt } -> get_leaf nt
     | Ptree.Leaf x -> x 
+      
+  (* All leaves should have the same environment *)
+  let get_env t = A.get_env (get_leaf t.tree)
 
   (* All leaves should have the same environment *)
   let top_no_disj a =
@@ -2834,61 +3043,77 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
   let to_shape a shp =
     assert (a.cnstrs = [init_blk]);
     let leaf = get_leaf a.tree in
-    apply (fun _ _ -> leaf) shp
+    apply (fun _ -> leaf) shp 
 
-  let remove_disj a = 
-    let a = eval (fun _ -> A.join) (fun _ x -> x) a in
+  let remove_disj a =
+    (* Note that we could evaluate [a] into a list of abstract elements, and
+       do a single join at the end. It may be better. *)
+    let a = eval (fun _ b1 b2 b3 -> A.join_list [b1; b2; b3]) (fun x -> x) a in
     {cnstrs = [init_blk]; tree = Ptree.Leaf a; }
 
-  let expand t v l = apply (fun _ x -> A.expand x v l) t
+  let expand t v l = apply (fun x -> A.expand x v l) t
 
-  let fold t l = apply (fun _ x -> A.fold x l) t
+  let fold t l = apply (fun x -> A.fold x l) t
 
   let bman : Box.t Manager.t = BoxManager.man
   let box_of_int int = Abstract0.of_box bman 1 0 (Array.init 1 (fun _ -> int))
-  let box_join b1 b2 = Abstract0.join bman b1 b2
+  let box_join b1 b2 b3 =
+    let bs = Array.of_list [b1; b2; b3] in
+    Abstract0.join_array bman bs
   let int_of_box b = Abstract0.bound_dimension bman b 0
 
   (* Interval does not support joins, so we go through level 0 boxes. *)
   let bound_variable t v =
-    eval (fun _ -> box_join) (fun _ x -> A.bound_variable x v |> box_of_int ) t
+    eval (fun _ -> box_join) (fun x -> A.bound_variable x v |> box_of_int ) t
     |> int_of_box
 
   let bound_texpr t e =
-    eval (fun _ -> box_join) (fun _ x -> A.bound_texpr x e |> box_of_int ) t
+    eval (fun _ -> box_join) (fun x -> A.bound_texpr x e |> box_of_int ) t
     |> int_of_box
 
   let assign_expr ?force:(force=false) (t : t) (v : mvar) (e : Mtexpr.t) =
-    apply (fun _ x -> A.assign_expr ~force:force x v e) t
+    apply (fun x -> A.assign_expr ~force:force x v e) t
 
-  let meet_constr t c = apply (fun _ x -> A.meet_constr x c) t
-  let meet_constr_list t cs = apply (fun _ x -> A.meet_constr_list x cs) t
+  let meet_constr t c = apply (fun x -> A.meet_constr x c) t
+  let meet_constr_list t cs = apply (fun x -> A.meet_constr_list x cs) t
 
-  let unify = apply2 (fun _ -> A.unify)
+  let unify = apply2 A.unify
 
-  let change_environment t l = apply (fun _ x -> A.change_environment x l) t
+  let change_environment t l = apply (fun x -> A.change_environment x l) t
 
-  let remove_vars t l = apply (fun _ x -> A.remove_vars x l) t
+  let remove_vars t l = apply (fun x -> A.remove_vars x l) t
 
-  let to_box = eval (fun _ -> Abstract1.join bman) (fun _ -> A.to_box)
+  let to_box = eval
+      (fun _ a1 a2 a3 ->
+         let ass = Array.of_list [a1; a2; a3] in
+         Abstract1.join_array bman ass)
+      A.to_box
 
 
-  let of_box bt tshape = apply (fun _ _ -> A.of_box bt) tshape
+  let of_box bt tshape = apply (fun _ -> A.of_box bt) tshape
 
   let shrt_tree t =
-    let fn c l r = match l, r with
-      | Ptree.Leaf la, Ptree.Leaf lr ->
-        if A.is_bottom la && A.is_bottom lr then Ptree.Leaf la
-        else Ptree.Node (c, l, r)
-      | _ -> Ptree.Node (c, l, r) in
+    (* See Ptree.eval for the order *)
+    let fn c mnt mnf mnu = match mnt, mnf, mnu with
+      | Ptree.Leaf lmnt, Ptree.Leaf lmnf, Ptree.Leaf lmnu ->
+        if A.is_bottom lmnt && A.is_bottom lmnf && A.is_bottom lmnu
+        then Ptree.Leaf lmnt
+        else Ptree.Node { constr   = c;
+                          n_true   = mnt;
+                          n_false  = mnf;
+                          n_unknwn = mnu; }
+      | _ -> Ptree.Node { constr   = c;
+                          n_true   = mnt;
+                          n_false  = mnf;
+                          n_unknwn = mnu; } in
 
-    let fl _ a = Ptree.Leaf a in
-
+    let fl a = Ptree.Leaf a in
+    
     eval fn fl t
 
   let print ?full:(full=false) fmt t =
     Ptree.pp_ptree (fun fmt a ->
-        if A.is_bottom a then Format.fprintf fmt "Bottom@;"
+        if A.is_bottom a then Format.fprintf fmt "⟂@;"
         else A.print ~full:full fmt a) fmt (shrt_tree t)
 end
 
@@ -4301,7 +4526,7 @@ end = struct
     else
       Format.eprintf "@[<v 0>\
                       [* Standard semantics *]@;@[<v 0>%a@]\
-                      [* Speculative semantics (live) *]@;@[<v 0>%a@]@;\
+                      [* Speculative semantics (live) *]@;@[<v 0>%a@]\
                       [* Speculative semantics (dead) *]@;@[<v 0>%a@]@;\
                       @]%!"
         (AbsDomStd.print ~full:true) std
@@ -6735,14 +6960,15 @@ end = struct
                 add_violations state [violation] in
 
 
-        (* [[body]]state_i U state*)
+        (* ⟦body⟧state_i ∪ state *)
         let eval_body state_i state =
           let cpt_instr = !num_instr_evaluated - 1 in
 
-          (* We add a disjunctive constraint block. *)
-          let abs_std = AbsDomStd.new_cnstr_blck state_i.abs_std prog_pt
-          and abs_spc = AbsDomSpc.new_cnstr_blck state_i.abs_spc prog_pt in
-          let state_i = { state_i with abs_std = abs_std; abs_spc = abs_spc; } in
+          (* REM *)
+          (* (\* We add a disjunctive constraint block. *\)
+           * let abs_std = AbsDomStd.new_cnstr_blck state_i.abs_std prog_pt
+           * and abs_spc = AbsDomSpc.new_cnstr_blck state_i.abs_spc prog_pt in
+           * let state_i = { state_i with abs_std = abs_std; abs_spc = abs_spc; } in *)
 
           let state_o = aeval_gstmt (c2 @ c1) state_i in
 
@@ -6759,10 +6985,11 @@ end = struct
                             AbsDomStd.forget_list
                               state_o.abs_std [mvar_ni] } in
 
-          (* We pop the disjunctive constraint block *)
-          let abs_std = AbsDomStd.pop_cnstr_blck state_o.abs_std prog_pt
-          and abs_spc = AbsDomSpc.pop_cnstr_blck state_o.abs_spc prog_pt in
-          let state_o = { state_o with abs_std = abs_std; abs_spc = abs_spc; } in
+          (* REM *)
+          (* (\* We pop the disjunctive constraint block *\)
+           * let abs_std = AbsDomStd.pop_cnstr_blck state_o.abs_std prog_pt
+           * and abs_spc = AbsDomSpc.pop_cnstr_blck state_o.abs_spc prog_pt in
+           * let state_o = { state_o with abs_std = abs_std; abs_spc = abs_spc; } in *)
 
           let abs_r_std = AbsDomStd.join state.abs_std state_o.abs_std in
           let abs_r_spc = AbsDomSpc.join state.abs_spc state_o.abs_spc in
@@ -6891,13 +7118,27 @@ end = struct
                               abs_dead_spc = w_abs_dead_spc; }
               state in
 
-        (* We first unroll the loop k_unroll times. We then stabilize the
-           abstraction (in finite time) using AbsDom.widening.
-           (k_unroll is a parameter of the analysis). *)
+        (* We first unroll the loop k_unroll times. 
+           (k_unroll is a parameter of the analysis) *)
         let state, pre_state = unroll_times Aparam.k_unroll state None in
 
-        if Aparam.widening_out then stabilize state pre_state
-        else stabilize_b (enter_loop state) state
+        (* We add a disjunctive constraint block. *)
+        let new_cnstr_blck state =
+          let abs_std = AbsDomStd.new_cnstr_blck state.abs_std prog_pt
+          and abs_spc = AbsDomSpc.new_cnstr_blck state.abs_spc prog_pt in
+          { state with abs_std = abs_std; abs_spc = abs_spc; } in
+        let state     = new_cnstr_blck state
+        and pre_state = omap new_cnstr_blck pre_state in
+
+        (* We stabilize the abstraction (in finite time) using widening. *)
+        let state =
+          if Aparam.widening_out then stabilize state pre_state
+          else stabilize_b (enter_loop state) state in
+
+        (* We pop the disjunctive constraint block *)
+        let abs_std = AbsDomStd.pop_cnstr_blck state.abs_std prog_pt
+        and abs_spc = AbsDomSpc.pop_cnstr_blck state.abs_spc prog_pt in
+        { state with abs_std = abs_std; abs_spc = abs_spc; } 
 
 
       | Ccall(_, lvs, f, es) ->
@@ -7147,19 +7388,6 @@ end = struct
              L.pp_sloc callsite
              pp_call_strategy strat);
     strat
-
-  (*------------------------------------------------------------------------*)
-  (* Procedure analysis *)
-
-  (* (\* fa_pre: checks that the function abstraction applies.
-   *    fa_post: return an abstraction of the state after applying the function. *\)
-   * type fun_abs = { fa_pre  : astate -> Prog.ty gexprs -> bool;
-   *                  fa_post : astate -> Prog.ty gexprs -> astate; }   
-   * 
-   * (\* REM *\)
-   * let proc_analysis_heuristic prog f =
-   *   let _f_decl = get_fun_def prog f |> oget in
-   *   assert false *)
   
   (*------------------------------------------------------------------------*)
   let print_mem_ranges state =
