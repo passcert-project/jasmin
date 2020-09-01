@@ -2687,8 +2687,10 @@ module type AbsDisjType = sig
   (* Adds a block of constraints for the disjunctive domain *)
   val new_cnstr_blck : t -> L.t -> t
 
-  (* Add a constraint to the top-most block *)
-  val add_cnstr : t -> Mtcons.t -> L.t -> t * t
+  (* Add a constraint to the top-most block.
+     If [meet] is true, meet the resulting branch with, respectively,
+     the constraint and its negation. *)
+  val add_cnstr : t -> meet:bool -> Mtcons.t -> L.t -> t * t
 
   (* Pop the top-most block of constraints in the disjunctive domain *)
   val pop_cnstr_blck : t -> L.t -> t
@@ -2910,13 +2912,26 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
                   n_false  = mnf';
                   n_unknwn = mnu';} )
     
-  (* Insert the constraint in the current block at the correct place *)
-  let rec add_cnstr_blck c t = match t with
-    | Ptree.Leaf a ->
-      let nt = A.meet_constr a c.mtcons
-      and nf = match flip_constr c.mtcons with
+  (* Insert the constraint in the current block at the correct place.
+     If [meet] is true, then meet the [n_true] branch with [c] and the 
+     [n_false] branch with [not c]. *)
+  let add_cnstr_blck ~meet c t =
+    let meet_true a =
+      if meet
+      then A.meet_constr a c.mtcons
+      else a 
+    and meet_false a =
+      if meet
+      then match flip_constr c.mtcons with
         | None -> a
-        | Some nc -> A.meet_constr a nc in
+        | Some nc -> A.meet_constr a nc
+      else a
+    in
+    
+    let rec add_cnstr_blck t = match t with
+    | Ptree.Leaf a ->
+      let nt = meet_true a
+      and nf = meet_false a in
 
       ( Ptree.Node { constr   = c ;
                      n_true   = Ptree.Leaf nt ;
@@ -2932,10 +2947,8 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
 
       (* [c] must be inserted above [c'] *)
       if cc = -1 then
-        let nt' = Ptree.apply (fun a -> A.meet_constr a c.mtcons) t
-        and nf' = Ptree.apply (fun a -> match flip_constr c.mtcons with
-            | None -> a
-            | Some nc -> A.meet_constr a nc) t in
+        let nt' = Ptree.apply (fun a -> meet_true a ) t
+        and nf' = Ptree.apply (fun a -> meet_false a) t in
 
       ( Ptree.Node { constr   = c ;
                      n_true   = nt' ;
@@ -2950,7 +2963,7 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
       (* [c] must be inserted below [c'] *)
       else if cc = 1 then
         build_tree_pair c'
-          (add_cnstr_blck c nt) (add_cnstr_blck c nf) (add_cnstr_blck c nu)
+          (add_cnstr_blck nt) (add_cnstr_blck nf) (add_cnstr_blck nu)
 
       (* [c] and [c'] are equal. We need to consider cross-cases here.
           c                       c      
@@ -2982,7 +2995,10 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
                        n_true   = tbottom nu;
                        n_false  = nf';
                        n_unknwn = tbottom nu; } )
+    in
 
+    add_cnstr_blck t
+  
   (* Go down to the last block in t and apply f, then inductively combine the
      results using fn *)
   let rec apply_last_blck fn f t l = match l,t with
@@ -2997,11 +3013,11 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
 
     | _ -> raise (Aint_error "apply_last_blck: bad shape err3")
 
-  let add_cnstr : t -> Mtcons.t -> L.t -> t * t = fun t c loc ->
+  let add_cnstr t ~meet c loc =
     match t.cnstrs with
     | cs :: l ->     
       let cnstr = make_cnstr c loc in
-      let f x = add_cnstr_blck cnstr x in
+      let f x = add_cnstr_blck ~meet:meet cnstr x in
 
       let sorted_cnstrs = 
         List.sort_uniq compare (cnstr :: cs.cblk_cnstrs) in
@@ -3168,11 +3184,13 @@ module Lift (A : AbsNumType) : AbsDisjType = struct
 
   let new_cnstr_blck t _ = t
 
-  let add_cnstr t c _ =
-    (A.meet_constr t c,
-     match flip_constr c with
-     | Some nc -> A.meet_constr t nc
-     | None -> t)
+  let add_cnstr t ~meet c _ =
+    ( (if meet then A.meet_constr t c else t),
+      if meet then
+        match flip_constr c with
+        | Some nc -> A.meet_constr t nc
+        | None -> t
+      else t)
 
   let pop_cnstr_blck t _ = t
 
@@ -3554,9 +3572,9 @@ module MakeAbsDisjProf (A : DisjWrap) : AbsDisjType = struct
     r
 
   let () = record "add_cnstr"
-  let add_cnstr x y z =
+  let add_cnstr x ~meet y z =
     let t = Sys.time () in
-    let r = add_cnstr x y z in
+    let r = add_cnstr x ~meet y z in
     let () = call "add_cnstr" (Sys.time () -. t) in
     r
 
@@ -4055,7 +4073,7 @@ module type AbsNumBoolType = sig
   val print : ?full:bool -> Format.formatter -> t -> unit
 
   val new_cnstr_blck : t -> L.t -> t
-  val add_cnstr      : t -> Mtcons.t -> L.t -> t * t
+  val add_cnstr      : t -> meet:bool -> Mtcons.t -> L.t -> t * t
   val pop_cnstr_blck : t -> L.t -> t
   val pop_all_blcks  : t -> t
 end
@@ -4516,8 +4534,8 @@ module AbsBoolNoRel (AbsNum : AbsNumT) (Pt : PointsTo)
 
   let new_cnstr_blck t l = { t with num = AbsNum.R.new_cnstr_blck t.num l }
 
-  let add_cnstr t c i =
-    let tl, tr = AbsNum.R.add_cnstr t.num c i in
+  let add_cnstr t ~meet c i =
+    let tl, tr = AbsNum.R.add_cnstr t.num ~meet c i in
     ( { t with num = tl }, { t with num = tr } )
 
   let pop_cnstr_blck t l = { t with num = AbsNum.R.pop_cnstr_blck t.num l }
@@ -7333,8 +7351,10 @@ end = struct
     let labs_std, rabs_std =
       if Aparam.if_disj && is_some (simpl_obtcons oec_std) then
         let ec = simpl_obtcons oec_std |> oget in
-        AbsDomStd.add_cnstr state.abs_std ec (fst ginstr.i_loc)
+        AbsDomStd.add_cnstr state.abs_std ~meet:true ec (fst ginstr.i_loc)
       else
+        (* FIXME: check that the fact that we do not introduce a 
+           disjunction node does not create issues. *)
         let noec_std = obind flip_btcons oec_std in
         ( eval_cond_std state oec_std, eval_cond_std state noec_std ) in
 
@@ -7345,12 +7365,12 @@ end = struct
     let oec_spc = AbsExprSpc.bexpr_to_btcons e state.abs_spc in
 
     let labs_spc, rabs_spc =
-      if spec
-      then state.abs_spc, state.abs_spc
-      else if Aparam.if_disj && is_some (simpl_obtcons oec_spc) then
+      let meet = not spec in
+      if Aparam.if_disj && is_some (simpl_obtcons oec_spc) then
         let ec = simpl_obtcons oec_spc |> oget in
-        AbsDomSpc.add_cnstr state.abs_spc ec (fst ginstr.i_loc)
+        AbsDomSpc.add_cnstr state.abs_spc ~meet:meet ec (fst ginstr.i_loc)
       else
+        (* FIXME: idem, see fixme above. *)
         let noec_spc = obind flip_btcons oec_spc in
         ( eval_cond_spc state oec_spc, eval_cond_spc state noec_spc ) in
 
