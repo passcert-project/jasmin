@@ -3112,6 +3112,9 @@ module AbsDisj (A : AbsNumType) : AbsDisjType = struct
     eval fn fl t
 
   let print ?full:(full=false) fmt t =
+    (* Useful to debug constrait blocks *)
+    (* Format.eprintf "debug: constraints:@; %a@.@."
+     *   pp_cblks t.cnstrs;     *)
     Ptree.pp_ptree (fun fmt a ->
         if A.is_bottom a then Format.fprintf fmt "⟂@;"
         else A.print ~full:full fmt a) fmt (shrt_tree t)
@@ -6886,6 +6889,11 @@ end = struct
       | Cwhile(_,c1, e, c2) ->
         let prog_pt = fst ginstr.i_loc in
 
+        (* We add a disjunctive constraint block. *)
+        let abs_std = AbsDomStd.new_cnstr_blck state.abs_std prog_pt
+        and abs_spc = AbsDomSpc.new_cnstr_blck state.abs_spc prog_pt in
+        let state = { state with abs_std = abs_std; abs_spc = abs_spc; } in
+
         let cpt = ref 0 in
         let state = aeval_gstmt c1 state in
 
@@ -6964,12 +6972,6 @@ end = struct
         let eval_body state_i state =
           let cpt_instr = !num_instr_evaluated - 1 in
 
-          (* REM *)
-          (* (\* We add a disjunctive constraint block. *\)
-           * let abs_std = AbsDomStd.new_cnstr_blck state_i.abs_std prog_pt
-           * and abs_spc = AbsDomSpc.new_cnstr_blck state_i.abs_spc prog_pt in
-           * let state_i = { state_i with abs_std = abs_std; abs_spc = abs_spc; } in *)
-
           let state_o = aeval_gstmt (c2 @ c1) state_i in
 
           (* We check that if the loop does not exit, then ni_e decreased by
@@ -6984,12 +6986,6 @@ end = struct
                           abs_std = 
                             AbsDomStd.forget_list
                               state_o.abs_std [mvar_ni] } in
-
-          (* REM *)
-          (* (\* We pop the disjunctive constraint block *\)
-           * let abs_std = AbsDomStd.pop_cnstr_blck state_o.abs_std prog_pt
-           * and abs_spc = AbsDomSpc.pop_cnstr_blck state_o.abs_spc prog_pt in
-           * let state_o = { state_o with abs_std = abs_std; abs_spc = abs_spc; } in *)
 
           let abs_r_std = AbsDomStd.join state.abs_std state_o.abs_std in
           let abs_r_spc = AbsDomSpc.join state.abs_spc state_o.abs_spc in
@@ -7121,14 +7117,6 @@ end = struct
         (* We first unroll the loop k_unroll times. 
            (k_unroll is a parameter of the analysis) *)
         let state, pre_state = unroll_times Aparam.k_unroll state None in
-
-        (* We add a disjunctive constraint block. *)
-        let new_cnstr_blck state =
-          let abs_std = AbsDomStd.new_cnstr_blck state.abs_std prog_pt
-          and abs_spc = AbsDomSpc.new_cnstr_blck state.abs_spc prog_pt in
-          { state with abs_std = abs_std; abs_spc = abs_spc; } in
-        let state     = new_cnstr_blck state
-        and pre_state = omap new_cnstr_blck pre_state in
 
         (* We stabilize the abstraction (in finite time) using widening. *)
         let state =
@@ -7333,20 +7321,24 @@ end = struct
         ( eval_cond_spc state oec_spc, eval_cond_spc state noec_spc ) in
 
     (* Branches evaluation *)
-    let lstate = aeval_gstmt c1 { state with abs_std = labs_std;
-                                             abs_spc = labs_spc} in
+    let lstate =
+      aeval_gstmt c1 { state with abs_std = labs_std;
+                                  abs_spc = labs_spc; } in
 
     let cpt_instr = !num_instr_evaluated - 1 in
 
     (* We abstractly evaluate the right branch
        Be careful the start from lstate, as we need to use the
        updated abstract iterator. *)
-    let rstate = aeval_gstmt c2 { lstate with abs_std = rabs_std;
-                                              abs_spc = rabs_spc; } in
+    let rstate =
+      aeval_gstmt c2 { lstate with abs_std = rabs_std;
+                                   abs_spc = rabs_spc;
+                                   abs_dead_spc = state.abs_dead_spc; } in
 
-    let abs_res_std     = AbsDomStd.join lstate.abs_std rstate.abs_std 
-    and abs_res_spc     = AbsDomSpc.join lstate.abs_spc rstate.abs_spc 
-    and abs_res_dead_spc = AbsDomSpc.join lstate.abs_dead_spc rstate.abs_dead_spc in
+    let abs_res_std = AbsDomStd.join lstate.abs_std rstate.abs_std 
+    and abs_res_spc = AbsDomSpc.join lstate.abs_spc rstate.abs_spc 
+    and abs_res_dead_spc =
+      AbsDomSpc.join lstate.abs_dead_spc rstate.abs_dead_spc in
     debug (fun () ->
         print_if_join ~print_spc:state.spec_analysis 
           cpt_instr ginstr 
