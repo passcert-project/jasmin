@@ -1100,7 +1100,7 @@ fn poly1305_avx2_wrapper(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
 
 
 
-export fn poly1305_avx2(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
+export fn poly1305_avx2_v4_safe_movcc_last(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
 {
   if(inlen < 257)
   { poly1305_ref3_local(out, in, inlen, k); }
