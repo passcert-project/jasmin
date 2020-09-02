@@ -190,18 +190,30 @@ fn poly1305_ref3_setup(reg u64 k) -> reg u64[3], reg u64[3], reg u64
 
 
 
-fn poly1305_ref3_update(reg u64 in, reg u64 inlen, reg u64[3] h, reg u64[3] r) -> reg u64, reg u64, reg u64[3]
+fn poly1305_ref3_update(
+  stack u64 s_in,
+  reg u64 in, reg u64 inlen,
+	reg u64[3] h, reg u64[3] r)
+	-> reg u64, reg u64, reg u64[3]
 {
   reg bool cf;
   reg u64[2] m;
 
-  while(inlen >= 16)
-  {
+  if (inlen >= 16) {
+	  // the fence ensures that 'inlen' is greater than 16, hence we can read
+		// at least 16 bytes of 'in'
 	  #LFENCE;
-    h = load_add(h, in);
-    h = mulmod(h, r);
-    in += 16;
-    inlen -= 16;
+    while
+    {
+  	  // We reset the pointer and length to safe values if we mispeculated
+      in    = s_in if inlen < 16;
+      inlen = 16   if inlen < 16;
+  		
+      h = load_add(h, in);
+      h = mulmod(h, r);
+      in += 16;
+      inlen -= 16;
+    }(inlen >= 16)
   }
 
   return in, inlen, h;
@@ -233,10 +245,15 @@ fn poly1305_ref3_local(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
   reg u64[3] h;
   reg u64[3] r;
   reg u64 len;
+	stack u64 s_in;
 
   h, r, k = poly1305_ref3_setup(k);
   len = inlen;
-  in, len, h = poly1305_ref3_update(in, len, h, r);
+
+	s_in = in;
+	#LFENCE;
+	
+  in, len, h = poly1305_ref3_update(s_in, in, len, h, r);
   poly1305_ref3_last(out, in, len, k, h, r);
 }
 
@@ -974,6 +991,7 @@ fn final_avx2_v0(
 
 // update AVX2
 fn poly1305_avx2_update(
+  stack u64 s_in,
   reg u64 in, reg u64 len,
   stack u256[5] r4444,  
   stack u256[4] r4444x5,
@@ -986,7 +1004,6 @@ fn poly1305_avx2_update(
   reg u256[5] h m;
   reg u256 mask26 t;
   reg u64[3] h64;
-	reg u64 s_in s_len;
 
   for i=0 to 5
   { h[i] = #VPBROADCAST_4u64(zero_u64); } // zero out me better 
@@ -998,14 +1015,11 @@ fn poly1305_avx2_update(
 	#LFENCE;
   m, in = load_avx2(in, mask26, s_bit25);
 
-  s_in  = in;
-	s_len = len;
-	#LFENCE;
-	
+  // we now that len is at least 256 before entering the loop
   while(len >= 128)
   {
 	  in  = s_in  if len < 128;
-		len = s_len if len < 128;
+		len = 128 if len < 128;
 	  h, m, in = mainloop_avx2_v1(h, m, in, r4444, r4444x5, s_mask26, s_bit25);
     len -= 64;
   }
@@ -1024,16 +1038,20 @@ fn poly1305_avx2_wrapper(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
   reg u64[3] h;
   reg u64[3] r;
   reg u64 len;
+	stack u64 s_in;
   stack u256[5] r4444   r1234;
   stack u256[4] r4444x5 r1234x5;
 
   len = inlen;
 
+  s_in = in;
+	#LFENCE;
+	
   h, r, k = poly1305_ref3_setup(k);
   r4444, r4444x5, r1234, r1234x5 = poly1305_avx2_setup(r);
 
-  in, len, h = poly1305_avx2_update(in, len, r4444, r4444x5, r1234, r1234x5);
-  in, len, h = poly1305_ref3_update(in, len, h, r);
+  in, len, h = poly1305_avx2_update(s_in, in, len, r4444, r4444x5, r1234, r1234x5);
+  in, len, h = poly1305_ref3_update(s_in, in, len, h, r);
 
   poly1305_ref3_last(out, in, len, k, h, r);
 }

@@ -191,7 +191,7 @@ fn poly1305_ref3_setup(reg u64 k) -> reg u64[3], reg u64[3], reg u64
 
 
 fn poly1305_ref3_update(
-  stack u64 s_in s_inlen,
+  stack u64 s_in,
   reg u64 in, reg u64 inlen,
 	reg u64[3] h, reg u64[3] r)
 	-> reg u64, reg u64, reg u64[3]
@@ -245,16 +245,15 @@ fn poly1305_ref3_local(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
   reg u64[3] h;
   reg u64[3] r;
   reg u64 len;
-	stack u64 s_len s_in;
+	stack u64 s_in;
 
   h, r, k = poly1305_ref3_setup(k);
   len = inlen;
 
 	s_in = in;
-	s_len = len;
 	#LFENCE;
 	
-  in, len, h = poly1305_ref3_update(s_in, s_len, in, len, h, r);
+  in, len, h = poly1305_ref3_update(s_in, in, len, h, r);
   poly1305_ref3_last(out, in, len, k, h, r);
 }
 
