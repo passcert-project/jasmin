@@ -331,7 +331,7 @@ fn increment_counter(stack u32[16] st) -> stack u32[16]
 
 
 
-export fn chacha20_ref(reg u64 output plain, reg u32 len, reg u64 key nonce, reg u32 counter)
+export fn chacha20_ref_v4_safe_movcc(reg u64 output plain, reg u32 len, reg u64 key nonce, reg u32 counter)
 {
   stack u64 s_output, s_plain;
   stack u32 r64;

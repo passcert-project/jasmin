@@ -997,7 +997,7 @@ fn chacha20_less_than_257(reg u64 output plain, reg u32 len, reg u64 key nonce, 
 
 
 
-export fn chacha20_avx2(reg u64 output plain, reg u32 len, reg u64 key nonce, reg u32 counter)
+export fn chacha20_avx2_v4_safe_fence(reg u64 output plain, reg u32 len, reg u64 key nonce, reg u32 counter)
 {
   if(len < 257)
   { chacha20_less_than_257(output, plain, len, key, nonce, counter); }
