@@ -307,7 +307,7 @@ let main () =
         let p = Conv.prog_of_cprog tbl cp in
         eprint_msg s (Printer.pp_prog ~debug:true) p;
         List.iter (Sct_checker.check_fun model) (List.rev (snd p))
-      else if s = Compiler.RemoveArrInit && !check_safety then begin
+      else if s = Compiler.RemoveGlobal && !check_safety then begin
         (* if s = Compiler.RegArrayExpansion && !check_safety then begin *)
         let p = Conv.prog_of_cprog tbl cp in
         let s1,s2 = Glob_options.print_strings s in
