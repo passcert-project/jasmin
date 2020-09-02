@@ -156,7 +156,6 @@ fn rounds(reg u32[16] k, stack u32 k15) -> reg u32[16], stack u32
 
     k = inlined_double_quarter_round(k, 2, 7, 8, 13,
                                         3, 4, 9, 14); 
-    #LFENCE; // this is needed because c is a stack variable 
     (_,_,_,zf,c) = #DEC_32(c);
   } (!zf)
 
@@ -269,7 +268,6 @@ fn store_last(stack u64 s_output s_plain, stack u32 s_len, reg u32[16] k, stack 
   { s_k[i] = k[i]; }
   u = k15;
   s_k[15] = u;
-  #LFENCE;
   output = s_output;
   plain = s_plain;
   len = s_len;
@@ -323,25 +321,20 @@ export fn chacha20_ref(reg u64 output plain, reg u32 len, reg u64 key nonce, reg
   s_len = len;
 
   st = init(key, nonce, counter);
-  while
-  {#LFENCE;} // protect s_len 
-  (s_len >= 64)
+  while (s_len >= 64)
   {
 
     k, k15 = copy_state(st);
     k, k15 = rounds(k, k15);
-    #LFENCE;
     s_output, s_plain, s_len = sum_states_store(s_output, s_plain, s_len, k, k15, st); 
     st = increment_counter(st);
   }
   if(s_len > 0)
   {
-    #LFENCE;
     k, k15 = copy_state(st);
     k, k15 = rounds(k, k15);
     k, k15 = sum_states(k, k15, st);
     store_last(s_output, s_plain, s_len, k, k15); 
   }
-  #LFENCE;
 }
 

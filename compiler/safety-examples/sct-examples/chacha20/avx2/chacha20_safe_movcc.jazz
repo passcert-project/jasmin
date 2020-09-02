@@ -945,38 +945,34 @@ fn chacha20_more_than_256(reg u64 output plain, reg u32 len, reg u64 key nonce, 
   stack u256[16] st;
   reg   u256[16]  k;
   stack u256 s_r16 s_r8;
-  stack u64 s_output s_plain;
-  stack u32 s_len;
+	stack u64 s_output s_plain;
+	reg u64 r512;
 
   s_r16, s_r8 = load_shufb_cmd();
 
   st = init_x8(key, nonce, counter);
 
-  s_output = output;
-	s_plain = plain;
-  s_len = len;
-	#LFENCE;
+	r512 = 512;
+  s_plain = plain;
+	s_output = output;
 
-  if (len >= 512){
-	  // we ensure that len is at least 512
-	  #LFENCE;
-		while {
-		  // we reset output, plain and len to their initial values if we
-		  // misspeculated
-      output  = s_output if len < 512;
-      plain   = s_plain  if len < 512;
-      len     = s_len    if len < 512;
-
+	if (len >= 512){
+		#LFENCE;
+    while
+    { plain  = s_plain if len < 512;
+		  output = s_output if len < 512;
+		  len    = r512 if len < 512;
+			
       k = copy_state_x8(st);
       k = rounds_x8(k, s_r16, s_r8);
       k = sum_states_x8(k, st);
       output, plain, len = store_x8(output, plain, len, k);
       st = increment_counter_x8(st);
     }(len >= 512)
-  }
+	}
 
   if(len > 0)
-  {
+  { 
     k = copy_state_x8(st);
     k = rounds_x8(k, s_r16, s_r8);
     k = sum_states_x8(k, st);
@@ -1002,7 +998,7 @@ fn chacha20_less_than_257(reg u64 output plain, reg u32 len, reg u64 key nonce, 
                              store_x2_last(output, plain, len, k2);
   }
   else
-  { #LFENCE;
+  { 
     k1 = copy_state_x2(st);
     k1 = rounds_x2(k1);
     k1 = sum_states_x2(k1, st);
@@ -1019,5 +1015,5 @@ export fn chacha20_avx2(reg u64 output plain, reg u32 len, reg u64 key nonce, re
   { chacha20_less_than_257(output, plain, len, key, nonce, counter); }
   else
   { chacha20_more_than_256(output, plain, len, key, nonce, counter); }
- #LFENCE;
+	#LFENCE;
 }

@@ -247,7 +247,7 @@ fn store_last(reg u64 output plain, reg u32 len, reg u256[2] k)
   r0 = k[0];
 
   if(len >= 32)
-  {
+  { #LFENCE;
     r0 ^= (u256)[plain + 0];
     (u256)[output + 0] = r0;
 
@@ -259,7 +259,7 @@ fn store_last(reg u64 output plain, reg u32 len, reg u256[2] k)
   r1 = #VEXTRACTI128(r0, 0);
 
   if(len >= 16)
-  {
+  { #LFENCE;
     r1 ^= (u128)[plain + 0];
     (u128)[output + 0] = r1;
 
@@ -272,7 +272,7 @@ fn store_last(reg u64 output plain, reg u32 len, reg u256[2] k)
 
   j = 0;
   while(j < len)
-  {
+  { #LFENCE;
     r3 = (u8)[plain + j];
     r3 ^= s0[(int)j];
     (u8)[output + j] = r3;
@@ -305,7 +305,7 @@ fn store_x2_last(reg u64 output plain, reg u32 len, reg u256[4] k)
   r[1] = k[1];
 
   if(len >= 64)
-  {
+  { #LFENCE;
     output, plain, len, r = store(output, plain, len, r);
     r[0] = k[2];
     r[1] = k[3];
@@ -339,7 +339,7 @@ fn store_x4_last(reg u64 output plain, reg u32 len, reg u256[8] k)
   for i=0 to 4 { r[i] = k[i]; }
 
   if(len >= 128)
-  {
+  { #LFENCE;
     output, plain, len, r = store_x2(output, plain, len, r);
     for i=0 to 4 { r[i] = k[i+4]; }
   }
@@ -479,7 +479,7 @@ fn store_x8_last(reg u64 output plain, reg u32 len, reg u256[16] k)
   i0_7 = interleave(s_k0_7, k8_15, i_0);
 
   if(len >= 256)
-  {
+  { #LFENCE;
     output, plain, len = store_x4(output, plain, len, i0_7);
     i0_7 = interleave(s_k0_7, k8_15, i_4);
   }
@@ -951,7 +951,7 @@ fn chacha20_more_than_256(reg u64 output plain, reg u32 len, reg u64 key nonce, 
   st = init_x8(key, nonce, counter);
 
   while(len >= 512)
-  {
+  { #LFENCE;
     k = copy_state_x8(st);
     k = rounds_x8(k, s_r16, s_r8);
     k = sum_states_x8(k, st);
@@ -960,7 +960,7 @@ fn chacha20_more_than_256(reg u64 output plain, reg u32 len, reg u64 key nonce, 
   }
 
   if(len > 0)
-  {
+  { 
     k = copy_state_x8(st);
     k = rounds_x8(k, s_r16, s_r8);
     k = sum_states_x8(k, st);
@@ -977,7 +977,7 @@ fn chacha20_less_than_257(reg u64 output plain, reg u32 len, reg u64 key nonce, 
   st = init_x2(key, nonce, counter); 
 
  if(len > 128)
-  {
+  { #LFENCE;
     k1, k2 = copy_state_x4(st);
     k1, k2 = rounds_x4(k1, k2);
     k1, k2 = sum_states_x4(k1, k2, st);
@@ -1003,5 +1003,5 @@ export fn chacha20_avx2(reg u64 output plain, reg u32 len, reg u64 key nonce, re
   { chacha20_less_than_257(output, plain, len, key, nonce, counter); }
   else
   { chacha20_more_than_256(output, plain, len, key, nonce, counter); }
- #LFENCE;
+	#LFENCE;
 }

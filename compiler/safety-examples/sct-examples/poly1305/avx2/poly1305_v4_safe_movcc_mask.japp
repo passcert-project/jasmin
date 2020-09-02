@@ -232,6 +232,9 @@ fn poly1305_ref3_update(
 {
   reg bool cf;
   reg u64[2] m;
+	stack u64 r16;
+
+	r16 = 16;
 
   if (inlen >= 16) {
 	  // the fence ensures that 'inlen' is greater than 16, hence we can read
@@ -241,7 +244,7 @@ fn poly1305_ref3_update(
     {
   	  // We reset the pointer and length to safe values if we mispeculated
       in    = s_in if inlen < 16;
-      inlen = 16   if inlen < 16;
+      inlen = r16   if inlen < 16;
   		
       h = load_add(h, in);
       h = mulmod(h, r);
@@ -1038,6 +1041,7 @@ fn poly1305_avx2_update(
   reg u256[5] h m;
   reg u256 mask26 t;
   reg u64[3] h64;
+	reg u64 r128;
 
   for i=0 to 5
   { h[i] = #VPBROADCAST_4u64(zero_u64); } // zero out me better 
@@ -1049,11 +1053,13 @@ fn poly1305_avx2_update(
 	#LFENCE;
   m, in = load_avx2(in, mask26, s_bit25);
 
+  r128 = 128;
+	
   // we now that len is at least 256 before entering the loop
   while(len >= 128)
   {
 	  in  = s_in  if len < 128;
-		len = 128 if len < 128;
+		len = r128 if len < 128;
 	  h, m, in = mainloop_avx2_v1(h, m, in, r4444, r4444x5, s_mask26, s_bit25);
     len -= 64;
   }

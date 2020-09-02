@@ -976,7 +976,7 @@ fn chacha20_less_than_257(reg u64 output plain, reg u32 len, reg u64 key nonce, 
 
   st = init_x2(key, nonce, counter); 
 
-  if(len > 128)
+ if(len > 128)
   {
     k1, k2 = copy_state_x4(st);
     k1, k2 = rounds_x4(k1, k2);
@@ -986,7 +986,7 @@ fn chacha20_less_than_257(reg u64 output plain, reg u32 len, reg u64 key nonce, 
                              store_x2_last(output, plain, len, k2);
   }
   else
-  {
+  { 
     k1 = copy_state_x2(st);
     k1 = rounds_x2(k1);
     k1 = sum_states_x2(k1, st);

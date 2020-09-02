@@ -231,6 +231,9 @@ fn poly1305_ref3_update(
 {
   reg bool cf;
   reg u64[2] m;
+	stack u64 r16;
+
+  r16 = 16;
 
   if (inlen >= 16) {
 	  // the fence ensures that 'inlen' is greater than 16, hence we can read
@@ -240,7 +243,7 @@ fn poly1305_ref3_update(
     {
   	  // We reset the pointer and length to safe values if we mispeculated
       in    = s_in if inlen < 16;
-      inlen = 16   if inlen < 16;
+      inlen = r16   if inlen < 16;
   		
       h = load_add(h, in);
       h = mulmod(h, r);
