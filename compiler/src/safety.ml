@@ -2749,12 +2749,12 @@ type cnstr_blk = { cblk_loc : L.t;
 (* hashconsing *)
 module OrdL = struct 
   type t = L.t
-  let compare = Stdlib.compare
+  let compare l l' = Stdlib.compare l.L.loc_start l'.L.loc_start
 
-  let equal l l' =  Stdlib.compare l l' = 0
+  let equal l l' =  l.L.loc_start = l'.L.loc_start 
 end
-module ML = Map.Make(OrdL)
-
+module ML = Map.Make (OrdL)
+    
 let hc = ref ML.empty
 let _uniq = ref 0
 
