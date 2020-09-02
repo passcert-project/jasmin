@@ -27,10 +27,12 @@ SUBDIRS2[sct-examples/chacha20/ref/chacha20_safe_movcc.jazz]="output;len"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_fence.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_movcc.japp]="in;inlen"
+SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_movcc_last.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_movcc_mask.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/ref3/poly1305.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/ref3/poly1305_safe_fence.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/ref3/poly1305_safe_movcc.japp]="in;inlen"
+SUBDIRS[sct-examples/poly1305/ref3/poly1305_safe_movcc_last.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/ref3/poly1305_safe_movcc_mask.japp]="in;inlen"
 
 SUBDIRS[sct-examples/curve25519/ref4/curve25519.japp]=";"
@@ -52,7 +54,7 @@ for i in "${!SUBDIRS2[@]}"; do
   # If true, wait until the next background job finishes to continue.
   ((cur_jobs >= MAXJOBS)) && wait -n
   echo "Starting ${i}"
-  (../jasminc ${OPTION} -safetyparam ${SUBDIRS[$i]} ${i} &> ${i}.res2 ;
+  (../jasminc ${OPTION} -safetyparam ${SUBDIRS2[$i]} ${i} &> ${i}.res2 ;
    echo "=> Done (2) ${i}, results" ;
    grep Safety ${i}.res2 | sed 's/^/  /'
   ) & ((++cur_jobs))
