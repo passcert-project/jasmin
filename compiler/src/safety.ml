@@ -1164,10 +1164,10 @@ type analyzer_param = { relationals : string list option;
 
 let int_thresholds =
   (* For unsigned *)
-  List.map (fun i -> mpq_pow_minus i 1) [8;16;32;128;256]
+  List.map (fun i -> mpq_pow_minus i 1) [8;16;32;64;128;256]
   (* (\* For signed *\)
-   * @ List.map (fun i -> mpq_pow_minus i 1) [7;15;31;127;255]
-   * @ List.map (fun i -> mpq_pow_minus i 0) [7;15;31;127;255] *)
+   * @ List.map (fun i -> mpq_pow_minus i 1) [7;15;31;63;127;255]
+   * @ List.map (fun i -> mpq_pow_minus i 0) [7;15;31;63;127;255] *)
 
 let neg i = Mpqf.neg i
 
@@ -1179,7 +1179,7 @@ let lcons env v i vneg iminus =
   let () = Linexpr1.set_list e [cv,v] (Some ci) in
   e
 
-(* Makes the bounds 'v >= 0' and 'v <= 2^N-1' for 'N' in {8;16;32;128;256} *)
+(* Makes the bounds 'v >= 0' and 'v <= 2^N-1' for 'N' in {8;16;32;64;128;256} *)
 let thresholds_uint env v =
   let acc = 
     [Lincons1.make (lcons env v (Mpqf.of_int 0) false true) Lincons0.SUPEQ] in
@@ -1188,13 +1188,17 @@ let thresholds_uint env v =
       Lincons1.make (lc true false) Lincons0.SUPEQ :: acc
     ) acc int_thresholds
 
+(* FIXME: rename *)
 let thresholds_zero env =
   let vars = Environment.vars env
              |> fst
              |> Array.to_list in
-  List.map (fun v ->
-      Lincons1.make (lcons env v (Mpqf.of_int 0) false true) Lincons0.SUPEQ
-    ) vars
+    List.fold_left (fun thrs v -> thresholds_uint env v @ thrs
+    ) [] vars
+
+  (* List.map (fun v ->
+   *     Lincons1.make (lcons env v (Mpqf.of_int 0) false true) Lincons0.SUPEQ
+   *   ) vars *)
     
 let thresholds_vars env =
   let vars = Environment.vars env
