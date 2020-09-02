@@ -130,7 +130,7 @@ fn rounds(stack u32 k0, reg u32[16] k, stack u32 k15)
   //while(c < 10)
   //{
 
-  c = 10;
+  c = 11;
   while {
 
     k13 = k[13];
@@ -172,8 +172,8 @@ fn rounds(stack u32 k0, reg u32[16] k, stack u32 k15)
 
     k = inlined_double_quarter_round(k, 2, 7, 8, 13,
                                         3, 4, 9, 14); 
-    (_,_,_,zf,c) = #DEC_32(c);
-  } (!zf)
+    c -= 1;
+  } (c > 0)
 
   //  c += 1; 
   //}  
