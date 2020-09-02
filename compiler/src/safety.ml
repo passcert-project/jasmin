@@ -6526,10 +6526,12 @@ end = struct
       [Some cf_carry; Some w_carry] 
 
     | _ ->                   (* General case, potential carry *)
-      let w = Pif (Bty (U ws), eb, w_carry, w_no_carry) in
-      let cf = Pif (Bty Bool, eb, cf_carry, cf_no_carry) in
+      let _w = Pif (Bty (U ws), eb, w_carry, w_no_carry) in
+      let _cf = Pif (Bty Bool, eb, cf_carry, cf_no_carry) in
 
-      [Some cf; Some w] 
+      (* FIXME: make this optional ?*)
+      [None; None]
+      (* [Some cf; Some w]  *)
 
   (* FIXME: check this *)
   let mk_subcarry ws es =
@@ -6557,10 +6559,12 @@ end = struct
       [Some cf_carry; Some w_carry] 
 
     | _ ->                   (* General case, potential carry *)
-      let w = Pif (Bty (U ws), eb, w_carry, w_no_carry) in
-      let cf = Pif (Bty Bool, eb, cf_carry, cf_no_carry) in
+      let _w = Pif (Bty (U ws), eb, w_carry, w_no_carry) in
+      let _cf = Pif (Bty Bool, eb, cf_carry, cf_no_carry) in
 
-      [Some cf; Some w] 
+      (* FIXME: make this optional ?*)
+      [None; None]
+      (* [Some cf; Some w]  *)
 
   
   (* -------------------------------------------------------------------- *)
