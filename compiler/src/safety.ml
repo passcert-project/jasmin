@@ -2747,26 +2747,36 @@ type cnstr_blk = { cblk_loc : L.t;
                    cblk_cnstrs : cnstr list; }
 
 (* hashconsing *)
-module MC = struct
-  type t = Mtcons.t * L.t
-  let compare (t,l) (t',l') =
-    if Mtcons.equal_tcons t t' && l = l' 
-    then 0 
-    else Stdlib.compare (t,l) (t',l')
+module OrdL = struct 
+  type t = L.t
+  let compare = Stdlib.compare
 
-  let equal (t,l) (t',l') =  Mtcons.equal_tcons t t' && l = l' 
+  let equal l l' =  Stdlib.compare l l' = 0
 end
-module Mmc = Map.Make(MC)
+module ML = Map.Make(OrdL)
 
-let hc = ref Mmc.empty
+let hc = ref ML.empty
 let _uniq = ref 0
 
+(* Note that the *)
 let make_cnstr c i =
-  try Mmc.find (c,i) !hc with
+  try
+    let constr = ML.find i !hc in
+    if Mtcons.equal_tcons constr.mtcons c
+    then constr
+    else begin
+      debug (fun () ->
+          Format.eprintf "make_cnstr for (%d, line %a):@.\
+                          changed constraint from %a to %a@."
+            constr.cpt_uniq L.pp_sloc i
+            Mtcons.print_mexpr constr.mtcons
+            Mtcons.print_mexpr c);
+          { constr with mtcons = c } end
+  with
   | Not_found ->
     incr _uniq;
     let res = { mtcons = c; cpt_uniq = !_uniq; loc = i } in
-    hc := Mmc.add (c,i) res !hc;
+    hc := ML.add i res !hc;
     res
 
 (* Disjunctive domain. Leaves are already constrained under the branch
