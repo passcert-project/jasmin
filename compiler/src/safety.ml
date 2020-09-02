@@ -86,7 +86,10 @@ module Aparam = struct
   (* Zero thresholds for the widening. *)
   let zero_threshold = true
 
-  (* More thresholds for the widening. *)
+  (* Thresholds from the analysis parameters for the widening. *)
+  let param_threshold = true
+
+    (* More thresholds for the widening. *)
   let more_threshold = false
 
   (* Dependency graph includes flow dependencies *)
@@ -97,7 +100,7 @@ module Aparam = struct
 
   (* Try to enrich the widening of A and B with the constraints of A 
      that are satisfied by B. *)
-  let enrich_widening = true
+  (* let enrich_widening = true *)
 
   (* Handle top-level conditional move and if expressions as if statements.
      Combinatorial explosion if there are many movecc and if expressions in the
@@ -1146,6 +1149,15 @@ let cst_pow_minus apr_env n y =
   |> cst_of_mpqf apr_env
 
 
+
+(***********************)
+(* Analyzer parameters *)
+(***********************)
+
+type analyzer_param = { relationals : string list option;
+                        pointers : string list option }
+
+
 (**********************)
 (* Generic Thresholds *)
 (**********************)
@@ -1198,6 +1210,37 @@ let thresholds_vars env =
           :: (Lincons1.make (lc false false) Lincons0.SUPEQ)
           :: acc) acc int_thresholds)
     [] vars
+
+
+let thresholds_param env param =
+  let param_pts  = Utils.odfl [] param.pointers
+  and param_rels = Utils.odfl [] param.relationals  in
+
+  let vars = fst (Environment.vars env)
+             |> Array.to_list in
+  
+  let param_rels = List.filter_map (fun v -> match mvar_of_avar v with
+      | MinValue gv ->
+        if List.mem gv.v_name param_rels then Some v else None
+      | _ -> None) vars in
+  
+  let thrs_v v =
+    List.map (fun inv ->
+        let e = Linexpr1.make env in
+        let cv, cinv = Coeff.s_of_int (-1), Coeff.s_of_int 1 in
+        let c0 = Coeff.s_of_int 0 in
+        let () = Linexpr1.set_list e [(cv,v);(cinv,inv)] (Some c0) in
+        Lincons1.make e Lincons0.SUPEQ
+      ) param_rels in
+                
+  List.fold_left (fun thrs v ->
+      match mvar_of_avar v with
+      | MmemRange (MemLoc gv) ->
+        if List.mem gv.v_name param_pts
+        then thrs_v v @ thrs
+        else thrs
+      | _ -> thrs
+    ) [] vars
 
 
 (************************************)
@@ -1411,7 +1454,13 @@ module type AbsNumType = sig
 end
 
 
-module AbsNumI (Manager : AprManager) : AbsNumType = struct
+module type ProgWrap = sig
+  val main : unit Prog.func
+  val prog : unit Prog.prog
+  val param : analyzer_param
+end
+
+module AbsNumI (Manager : AprManager) (PW : ProgWrap) : AbsNumType = struct
 
   type t = Manager.t Abstract1.t
   let man = Manager.man
@@ -1479,31 +1528,30 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
     | None -> []
     | Some lc -> [lc]
 
-  let enrich_widening a a' res =
-    let env = Abstract1.env a in
-    let ea = Abstract1.to_lincons_array man a
-             |> earray_to_list in
-    let to_add = List.filter (fun lin -> Abstract1.sat_lincons man a' lin) ea
-                 |> to_earray env in
-    Abstract1.meet_lincons_array man res to_add
+  (* let enrich_widening a a' res =
+   *   let env = Abstract1.env a in
+   *   let ea = Abstract1.to_lincons_array man a
+   *            |> earray_to_list in
+   *   let to_add = List.filter (fun lin -> Abstract1.sat_lincons man a' lin) ea
+   *                |> to_earray env in
+   *   Abstract1.meet_lincons_array man res to_add *)
 
   let compute_thresholds env oc =
-    let vars = 
-      omap_dfl (fun c -> 
-          Mtexpr.get_var_mexpr (Mtcons.get_expr c).mexpr
-        ) [] oc in
+    let vars = omap_dfl (fun c -> 
+        Mtexpr.get_var_mexpr (Mtcons.get_expr c).mexpr
+      ) [] oc in
     let thrs_vars = 
       List.map (fun v -> thresholds_uint env (avar_of_mvar v)) vars 
       |> List.flatten in
     let thrs_oc = thrs_of_oc oc env in
     let thrs = thrs_oc @ thrs_vars in
     let thrs =
-      if Aparam.more_threshold 
-      then thresholds_vars env @ thrs
-      else thrs in
+      if Aparam.more_threshold then thresholds_vars env @ thrs else thrs in
     let thrs =
-      if Aparam.zero_threshold 
-      then thresholds_zero env @ thrs
+      if Aparam.zero_threshold then thresholds_zero env @ thrs else thrs in
+    let thrs =
+      if Aparam.param_threshold
+      then thresholds_param env PW.param @ thrs
       else thrs in
 
     if is_relational () then
@@ -1521,9 +1569,9 @@ module AbsNumI (Manager : AprManager) : AbsNumType = struct
        e.g. Polka, seem to assume that a is included in a'
        (and may segfault otherwise!). *)
     let res = Abstract1.widening_threshold man a a' (thrs |> to_earray env) in
-    if Aparam.enrich_widening
-    then enrich_widening a a' res
-    else res
+    (* if Aparam.enrich_widening
+     * then enrich_widening a a' res
+     * else  *)res
 
   let forget_list a l =
     let l = u8_blast_vars ~blast_arrays:true l in
@@ -1928,15 +1976,6 @@ let is_prefix u v =
   if String.length u <= String.length v then
     String.sub v 0 (String.length u) = u
   else false
-
-type analyzer_param = { relationals : string list option;
-                        pointers : string list option }
-
-module type ProgWrap = sig
-  val main : unit Prog.func
-  val prog : unit Prog.prog
-  val param : analyzer_param
-end
 
 module type VDomWrap = sig
   (* Associate a domain (ppl or non-relational) to every variable.
@@ -3615,7 +3654,8 @@ end
 module AbsNumTMake (PW : ProgWrap) : AbsNumT = struct
   module VDW = PIMake (PW)
 
-  module RProd = AbsNumProd (VDW) (AbsNumI(BoxManager)) (AbsNumI(PplManager))
+  module RProd =
+    AbsNumProd (VDW) (AbsNumI (BoxManager) (PW)) (AbsNumI (PplManager) (PW))
 
   module RNum = AbsDisj (RProd)
 
@@ -3624,7 +3664,7 @@ module AbsNumTMake (PW : ProgWrap) : AbsNumT = struct
       let prefix = "R."
     end)
 
-  module NRNum = AbsNumI(BoxManager)
+  module NRNum = AbsNumI (BoxManager) (PW)
 
   module NR = MakeAbsNumProf (struct
       module Num = NRNum
