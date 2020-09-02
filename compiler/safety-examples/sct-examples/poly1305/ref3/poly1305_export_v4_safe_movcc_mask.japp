@@ -20,32 +20,66 @@ fn load_add(reg u64[3] h, reg u64 in) -> reg u64[3]
 
 
 
-fn load_last_add(reg u64[3] h, reg u64 in, reg u64 len) -> reg u64[3]
+fn load_last_add_mask(reg u64 len) -> reg u64[2], reg u64[2]
 {
   reg bool cf;
-  reg   u64    j;
-  stack u64[2] s;
-  reg   u8     c;
+  reg   u64 s0 s1 s2 nb b m;
+  reg   u64[2] m1 m2;
 
-  s[0] = 0;
-  s[1] = 0;
+  _,_,_,_,_,s0 = #set0();
+  s1  = len;
+  s1 &= 7;
+  s1 <<= 3; // [0,8,...,56]
 
-  j = 0;
-  while(j < len)
-  { c = (u8)[in + j];
-    s[u8 (int)j] = c;
-    j += 1;
+  // if 4th bit is set (>=8) then m = 0 else m = 0xffff..
+  b   = len;
+  b >>= 3;
+  nb  = b;
+  nb ^= 1;
+  m   = b;
+  m  -= 1;
+
+  // swap if < 8
+  s2  = s1;
+  s2 &= m; 
+  s0 ^= s2;
+  s1 ^= s2;
+
+  m1[0] = nb;
+  m1[1] =  b;
+  m1[0] <<= s0;
+  s0 = s1; //rcx
+  m1[1] <<= s0;
+
+  m2 = m1;
+
+  cf, m2[0] -= 1;
+   _, m2[1] -= 0 - cf;
+
+  return m2, m1;
+}
+
+
+fn load_last_add(reg u64[3] h, reg u64 in len) -> reg u64[3]
+{
+  inline int i;
+  reg bool cf;
+  reg   u64[2] v m1 m2;
+
+  m1, m2 = load_last_add_mask(len);
+
+  for i=0 to 2
+  { v[i] = [in + 8*i];
+    v[i] &= m1[i];
+    v[i] |= m2[i];
   }
 
-  s[u8 (int)j] = 0x1;
-
-  cf, h[0] += s[0];
-  cf, h[1] += s[1] + cf;
+  cf, h[0] += v[0];
+  cf, h[1] += v[1] + cf;
    _, h[2] +=    0 + cf;
  
   return h;
-} 
-
+}
 
 
 fn store2(reg u64 p, reg u64[2] x)
@@ -189,17 +223,30 @@ fn poly1305_ref3_setup(reg u64 k) -> reg u64[3], reg u64[3], reg u64
 
 
 
-fn poly1305_ref3_update(reg u64 in, reg u64 inlen, reg u64[3] h, reg u64[3] r) -> reg u64, reg u64, reg u64[3]
+fn poly1305_ref3_update(
+  stack u64 s_in,
+  reg u64 in, reg u64 inlen,
+	reg u64[3] h, reg u64[3] r)
+	-> reg u64, reg u64, reg u64[3]
 {
   reg bool cf;
   reg u64[2] m;
 
-  while(inlen >= 16)
-  {
-    h = load_add(h, in);
-    h = mulmod(h, r);
-    in += 16;
-    inlen -= 16;
+  if (inlen >= 16) {
+	  // the fence ensures that 'inlen' is greater than 16, hence we can read
+		// at least 16 bytes of 'in'
+	  #LFENCE;
+    while
+    {
+  	  // We reset the pointer and length to safe values if we mispeculated
+      in    = s_in if inlen < 16;
+      inlen = 16   if inlen < 16;
+  		
+      h = load_add(h, in);
+      h = mulmod(h, r);
+      in += 16;
+      inlen -= 16;
+    }(inlen >= 16)
   }
 
   return in, inlen, h;
@@ -231,10 +278,15 @@ fn poly1305_ref3_local(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
   reg u64[3] h;
   reg u64[3] r;
   reg u64 len;
+	stack u64 s_in;
 
   h, r, k = poly1305_ref3_setup(k);
   len = inlen;
-  in, len, h = poly1305_ref3_update(in, len, h, r);
+
+	s_in = in;
+	#LFENCE;
+	
+  in, len, h = poly1305_ref3_update(s_in, in, len, h, r);
   poly1305_ref3_last(out, in, len, k, h, r);
 }
 
