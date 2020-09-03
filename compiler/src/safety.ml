@@ -5828,8 +5828,7 @@ module AbsInterpreter (PW : ProgWrap) : sig
                         * (Format.formatter -> mvar -> unit)
 end = struct
 
-  (* We ensure that all variable names are unique *)
-  let main_decl,prog = MkUniq.mk_uniq PW.main PW.prog;;
+  let main_decl,prog = PW.main, PW.prog;;
 
   Prof.reset_all ();;
 
@@ -7587,6 +7586,12 @@ module type ExportWrap = sig
 end
 
 module AbsAnalyzer (EW : ExportWrap) = struct
+  
+  module EW = struct
+      (* We ensure that all variable names are unique *)
+    let main,prog = MkUniq.mk_uniq EW.main EW.prog
+  end
+
   let parse_pt_rel s = match String.split_on_char ';' s with
     | [pts;rels] ->
       let relationals =
@@ -7615,7 +7620,8 @@ module AbsAnalyzer (EW : ExportWrap) = struct
           | [ps] -> (None, parse_pt_rels ps)
           | _ -> raise (Failure "-safetyparam ill-formed (too many '>' ?)"))
 
-  let analyze () = 
+  let analyze () =
+    try
     let ps_assoc = omap_dfl (fun s_p -> parse_params s_p)
         [ None, [ { relationals = None; pointers = None } ]]
         !Glob_options.safety_param in
@@ -7654,7 +7660,7 @@ module AbsAnalyzer (EW : ExportWrap) = struct
                       @[<v 2>Memory ranges (speculative semantics):@;%a@]@;"
         (pp_list print_mvar_interval_std) npt
         (pp_list print_mvar_interval_spc) npt in
-
+      
       Format.eprintf "@.@[<v>%a@;\
                       %t\
                       %a@]@."
@@ -7666,4 +7672,5 @@ module AbsAnalyzer (EW : ExportWrap) = struct
         Format.eprintf "@[<v>Program is not safe!@;@]@.";
         exit(2)
       end;
+    with | Manager.Error _ as e -> hndl_apr_exc e
 end
