@@ -561,8 +561,8 @@ module V4_weak = struct
     let xS = 
       Sv.fold (fun x s ->
           if is_stack_var x then Sv.add (get_xs env x) s 
-          else s) (vars_fc f) (Sv.singleton xs) in
-    let (iS, iC), _body = sct_c env body (xS, Sv.empty) in
+          else s) (vars_fc f) (Sv.singleton xs) in 
+    let (iS, iC), _body = sct_c env body (Sv.empty, Sv.empty) in
     
     let to_keep = 
       Sv.add mem (Sv.union xS (Sv.of_list f.f_args)) in
