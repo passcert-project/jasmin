@@ -342,6 +342,7 @@ export fn chacha20_ref_v4_safe_movcc(reg u64 output plain, reg u32 len, reg u64 
 
   stack u32[16] st;
   reg   u32[16] k;  // the full state is in k0, k[1..14] and k15;
+  reg   u32 aux;
   stack u32     k0 k15;
 
   s_output0 = output;
@@ -352,14 +353,15 @@ export fn chacha20_ref_v4_safe_movcc(reg u64 output plain, reg u32 len, reg u64 
   st = init(key, nonce, counter);
   
   if (len >= 64) {
-    #LFENCE;
+      #LFENCE;
     while 
-    {
+    { 
       k0, k, k15 = copy_state(st);
       k0, k, k15 = rounds(k0, k, k15);
       s_output, s_plain, len = sum_states_store(s_64, s_output0, s_output, s_plain0, s_plain, len, k0, k, k15, st); 
       st = increment_counter(st);
-    } (len >= 64)
+   } (len >= 64)
+
   }
  
   if(len > 0)
@@ -369,6 +371,8 @@ export fn chacha20_ref_v4_safe_movcc(reg u64 output plain, reg u32 len, reg u64 
     k0, k, k15 = sum_states(k0, k, k15, st);
     store_last(s_output, s_plain, len, k0, k, k15); 
   }
+
+
 	#LFENCE;
 }
 
