@@ -28,15 +28,10 @@ SUBDIRS[sct-examples/poly1305/avx2/poly1305.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_fence.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_movcc.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_movcc_last.japp]="in;inlen"
-SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_movcc_mask.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/ref3/poly1305.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/ref3/poly1305_safe_fence.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/ref3/poly1305_safe_movcc.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/ref3/poly1305_safe_movcc_last.japp]="in;inlen"
-SUBDIRS[sct-examples/poly1305/ref3/poly1305_safe_movcc_mask.japp]="in;inlen"
-
-SUBDIRS[sct-examples/curve25519/ref4/curve25519.japp]=";"
-SUBDIRS[sct-examples/curve25519/ref4/curve25519_v4.japp]=";"
 
 
 CURJOBS=0
