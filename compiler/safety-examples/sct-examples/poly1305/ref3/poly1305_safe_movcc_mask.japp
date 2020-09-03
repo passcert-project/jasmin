@@ -296,8 +296,11 @@ fn poly1305_ref3_local(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
 
 
 
-export fn poly1305_ref3(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
+export fn poly1305_ref3(reg u64 out, reg u64 in, reg u64 _inlen, reg u64 _k)
 {
+  reg u64 inlen k;
+  inlen = _inlen;
+  k = _k;
   poly1305_ref3_local(out, in, inlen, k);
   #LFENCE;
 }

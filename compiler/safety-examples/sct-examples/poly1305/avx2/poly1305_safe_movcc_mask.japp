@@ -1098,8 +1098,13 @@ fn poly1305_avx2_wrapper(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
 
 
 
-export fn poly1305_avx2(reg u64 out, reg u64 in, reg u64 inlen, reg u64 k)
+export fn poly1305_avx2(reg u64 out, reg u64 in, reg u64 _inlen, reg u64 _k)
 {
+  reg u64 inlen k;
+
+  inlen = _inlen;
+  k = _k;
+
   if(inlen < 257)
   { poly1305_ref3_local(out, in, inlen, k); }
   else
