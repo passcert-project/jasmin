@@ -95,10 +95,6 @@ module Aparam = struct
   (* Dependency graph includes flow dependencies *)
   let flow_dep = false
 
-  (* Dependency graph ignores movcc instruction (and if expressions).
-     Useful for speculative safety analysis *)
-  let dep_ignore_movcc = true
-
   (* Add disjunction with if statement when possible *)
   let if_disj = true
 
@@ -692,12 +688,7 @@ end = struct
       if flag_mem_lvs v lvs then raise Flag_set_from_failure else None        
       
   let rec pa_instr fn prog st instr = match instr.i_desc with
-    | Cassgn (_,_,_, Pif (_, _, _, _))
-    | Copn (_,_,E.Ox86 (X86_instr_decl.CMOVcc _),_)
-      when Aparam.dep_ignore_movcc -> st
-
     | Cassgn (lv, _, _, e) -> pa_lv st lv e
-
     | Copn (lvs, _, _, es) -> List.fold_left (fun st lv ->
         List.fold_left (fun st e -> pa_lv st lv e) st es) st lvs
 
