@@ -19,10 +19,8 @@ SUBDIRS2[sct-examples/chacha20/avx2/chacha20_safe_movcc.jazz]="output;len"
 
 # SUBDIRS[sct-examples/chacha20/ref/chacha20.jazz]="plain;len"
 SUBDIRS[sct-examples/chacha20/ref/chacha20_safe_fence.jazz]="plain;len"
-SUBDIRS[sct-examples/chacha20/ref/chacha20_safe_movcc.jazz]="plain;len"
 # SUBDIRS2[sct-examples/chacha20/ref/chacha20.jazz]="output;len"
 SUBDIRS2[sct-examples/chacha20/ref/chacha20_safe_fence.jazz]="output;len"
-SUBDIRS2[sct-examples/chacha20/ref/chacha20_safe_movcc.jazz]="output;len"
 
 # SUBDIRS[sct-examples/poly1305/avx2/poly1305.japp]="in;inlen"
 SUBDIRS[sct-examples/poly1305/avx2/poly1305_safe_fence.japp]="in;inlen"
