@@ -118,7 +118,7 @@ fn inlined_double_quarter_round(
 fn rounds(reg u32[16] k, stack u32 k15) -> reg u32[16], stack u32
 {
   inline int i;
-  stack u32 c, k14;
+	stack u64 c;
   stack u32 k14;
   reg bool zf;
 

@@ -122,7 +122,7 @@ fn rounds(stack u32 k0, reg u32[16] k, stack u32 k15)
 -> stack u32, reg u32[16], stack u32
 {
   inline int i;
-  stack u32 c;
+  stack u64 c;
   stack u32 k13 k14;
   reg bool zf;
 
