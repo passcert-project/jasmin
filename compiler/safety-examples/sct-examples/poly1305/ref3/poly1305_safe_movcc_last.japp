@@ -52,7 +52,7 @@ fn load_last_add(reg u64[3] h, reg u64 in, reg u64 len) -> reg u64[3]
 	j <<= 1;
 	if (len >= 4){
     #LFENCE;
-		c32 = (u32)[in + j]; //rename
+		c32 = (u32)[in + 4 * j]; //rename
     s[u32 (int)j] = c32;
 		len -= 4;
 		j += 1;             // 4
@@ -60,7 +60,7 @@ fn load_last_add(reg u64[3] h, reg u64 in, reg u64 len) -> reg u64[3]
 	j <<= 1;
 	if (len >= 2){
     #LFENCE;
-		c16 = (u16)[in + j]; //rename
+		c16 = (u16)[in + 2 * j]; //rename
     s[u16 (int)j] = c16;
 		len -= 2;
 		j += 1;             // 2
