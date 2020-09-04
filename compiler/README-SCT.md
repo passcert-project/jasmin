@@ -1,12 +1,28 @@
-Speculative safety analysis
---------------------------------------------------------------------
-
 - The implementations of poly1305 and chacha20 are in the sct-examples/*
   folder, in the ref/ sub-folder for the scalar versions, and avx2 sub-folders
   for the vectorized versions.
 
+Speculative constant-time
+--------------------------------------------------------------------
+- To check if a program is SCT-F, simply run:
+   jasminc -v4_weak [program.jazz]
+  At the end you see a message.
+  Example:
+    ./jasminc -v4_weak sct-examples/poly1305/avx2/poly1305_safe_fence.japp
+  print 
+    dependency: C = { out inlen k in }
+  This means that out inlen k in should be public.
+  With is ok, because they are pointers so there values are public,
+  only the pointed values are secret.
+
+- Remember that you also need to perform to spec-safety check to be sure 
+  that the program is SCT.
+  
+Speculative safety analysis
+--------------------------------------------------------------------
+
 - To check the speculative safety of the implementations, simply run:
-     - `$ ./sct-check`
+     - `$ bash ./spec-safety-check`
   Note that the analysis of some implementations can take a very long time
   (from a few minutes for the ref/Poly1305 implementations to several hours
   for the avx2/Chacha20 implementations).
