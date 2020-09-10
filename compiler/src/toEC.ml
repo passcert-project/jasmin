@@ -650,7 +650,7 @@ let pp_lval1 env pp_e fmt (lv, (ety, e)) =
       let nws = n * int_of_ws xws in
       let nws8 = nws / 8 in
       Format.fprintf fmt 
-        "@[%a =@ @[Array%i.init@ (WArray%i.get%i (WArray%i.set%i %a %a %a));@]@]"
+        "@[%a <-@ @[Array%i.init@ (WArray%i.get%i (WArray%i.set%i %a %a %a));@]@]"
         (pp_var env) x n nws8 (int_of_ws xws) nws8 (int_of_ws ws)
         (pp_initi env) (x, n, xws) (pp_expr env) e1 pp_e e
  
@@ -668,7 +668,7 @@ let pp_lvals env fmt xs =
 
 let pp_aux_lvs fmt aux = 
   match aux with
-  | []  -> assert false
+  | []  -> Format.fprintf fmt "____UNIT____"
   | [x] -> Format.fprintf fmt "%s" x
   | xs  -> Format.fprintf fmt "(%a)" (pp_list ",@ " pp_string) xs
 
@@ -680,7 +680,7 @@ module Normal = struct
 
   let check_lvals lvs = 
     match lvs with
-    | [] -> assert false
+    | [] -> false
     | [lv] -> begin match lv with Lvar _ | Laset _ -> true | _ -> false end
     | _ -> all_vars lvs 
 
@@ -1057,7 +1057,8 @@ end
 let pp_aux fmt env = 
   let pp ty aux = 
     Format.fprintf fmt "@[var %s:@ %a@];@ " aux (pp_ty false) ty in
-  Mty.iter (fun ty -> List.iter (pp ty)) env.auxv
+  Mty.iter (fun ty -> List.iter (pp ty)) env.auxv;
+  Format.fprintf fmt "var ____UNIT____ : unit;@ "
 
 let pp_safe_ret env fmt xs =
   if for_safety env then

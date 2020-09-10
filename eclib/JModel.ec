@@ -280,6 +280,9 @@ op VPBLENDD_256 (w1 w2: W256.t) (i:W8.t) : W256.t =
   pack8 [choose 0; choose 1; choose 2; choose 3; choose 4; choose 5; choose 6; choose 7].
 
 (* ------------------------------------------------------------------- *)
+op LFENCE = ().
+
+(* ------------------------------------------------------------------- *)
 abbrev [-printing] (\vshr32u128) (w1:W128.t) (w2:W8.t) = VPSRL_4u32 w1 w2.
 abbrev [-printing] (\vshl32u128) (w1:W128.t) (w2:W8.t) = VPSLL_4u32 w1 w2.
 abbrev [-printing] (\vadd32u128) (w1 w2:W128.t) = VPADD_4u32 w1 w2.
@@ -305,3 +308,5 @@ type leakage_t = [
 ].
 
 type leakages_t = leakage_t list.
+
+
