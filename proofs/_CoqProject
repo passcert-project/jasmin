@@ -1,5 +1,9 @@
 -arg -w
 -arg -parsing
+-arg -w
+-arg -ambiguous-paths
+-arg -w
+-arg -omega-is-deprecated
 
 -R 3rdparty Jasmin
 -R compiler Jasmin

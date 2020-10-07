@@ -1,6 +1,6 @@
 with import <nixpkgs> {};
 
-let coqPackages = coqPackages_8_9; in
+let coqPackages = coqPackages_8_12; in
 
 let coqword = callPackage ./coqword.nix { inherit coqPackages; }; in
 
