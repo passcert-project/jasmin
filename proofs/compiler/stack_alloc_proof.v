@@ -28,6 +28,7 @@ From mathcomp Require Import all_ssreflect all_algebra.
 From CoqWord Require Import ssrZ.
 Require Import psem compiler_util constant_prop_proof.
 Require Export psem stack_alloc.
+Require Import byteset.
 Require Import Psatz.
 Import Utf8.
 
@@ -42,24 +43,80 @@ Local Open Scope Z_scope.
 Import Region.
 
 (* --------------------------------------------------------------------------- *)
-(*
-Definition size_of (t:stype) :=
-  match t with
-  | sword sz => wsize_size sz
-  | sarr n   => Zpos n
-  | _        => 1
-  end.
 
 Section Section.
 
 Variables (pmap:pos_map) (stk_size glob_size:Z).
 Variables (rsp rip: pointer).
-(* FIXME: we should be more flexible on the alignment of rsp and rip *)
-Hypothesis (is_align_rsp: forall ws, is_align rsp ws) (is_align_rip: forall ws, is_align rip ws).
 
-Hypothesis (rsp_bound : wunsigned rsp + stk_size <= wbase Uptr)
-           (rip_bound : wunsigned rip + glob_size <= wbase Uptr).
+Variable (Slots : Sv.t).
+Variable (Addr : slot -> pointer).
+Variable (Writable : slot -> bool).
+Variable (Align : slot -> wsize).
 
+Definition size_slot (s : slot) := size_of s.(vtype).
+
+Definition slot_valid m := forall s p, Sv.In s Slots ->
+  between (Addr s) (size_slot s) p U8 -> valid_pointer m p U8.
+
+(* NOTE: disjoint_zrange already contains no_overflow conditions *)
+(* slots are disjoint from the source memory [ms] *)
+Definition disjoint_source ms :=
+  forall s p ws, Sv.In s Slots -> valid_pointer ms p ws ->
+  disjoint_zrange (Addr s) (size_slot s) p (wsize_size ws).
+
+(* Addresses of slots can be manipulated without risking overflows. *)
+Hypothesis addr_no_overflow : forall s, Sv.In s Slots ->
+  no_overflow (Addr s) (size_slot s).
+
+(* Two distinct slots, with at least one of them writable, are disjoint. *)
+Hypothesis disjoint_writable : forall s1 s2,
+  Sv.In s1 Slots -> Sv.In s2 Slots -> s1 <> s2 ->
+  Writable s1 ->
+  disjoint_zrange (Addr s1) (size_slot s1) (Addr s2) (size_slot s2).
+
+(* The address [Addr s] of a slot s is aligned w.r.t. [Align s]. *)
+Hypothesis (slot_align :
+  forall s, Sv.In s Slots -> is_align (Addr s) (Align s)).
+
+(* All pointers valid in memory [m0] are valid in memory [m].
+   It is supposed to be applied with [m0] the initial target memory
+   and [m] the current target memory.
+*)
+Definition valid_incl m0 m :=
+  forall p ws, valid_pointer m0 p ws -> valid_pointer m p ws.
+
+(* ms: source memory
+   m0: initial target memory
+   m: current target memory
+
+   ms:
+                                              --------------------
+                                              |    mem source    |
+                                              --------------------
+
+   m0:
+   ------------- --------------- ------------ --------------------
+   |   stack   | | other stack | |   glob   | |    mem source    |
+   ------------- --------------- ------------ --------------------
+
+                                  ||
+                                  || execution
+                                  \/
+
+   m:
+   ------------- --------------- ------------ --------------------
+   |   stack   | | other stack | |   glob   | |    mem source    |
+   ------------- --------------- ------------ --------------------
+
+*)
+(* The memory zones that are not in a writable slot remain unchanged. *)
+Definition disjoint_writable_is_constant ms m0 m :=
+  forall p ws, valid_pointer m0 p ws -> ~~ valid_pointer ms p ws ->
+  (forall s, Sv.In s Slots -> Writable s -> disjoint_zrange (Addr s) (size_slot s) p (wsize_size ws)) ->
+  read_mem m0 p ws = read_mem m p ws.
+
+(* The stack and the global space are disjoint (if both non-trivial) *)
 Hypothesis disj_rsp_rip :
   0 < stk_size -> 0 < glob_size ->
   wunsigned rsp + stk_size <= wunsigned rip \/ wunsigned rip + glob_size <= wunsigned rsp.
@@ -70,7 +127,7 @@ Lemma valid_align m p ws :
 Proof. by case/Memory.valid_pointerP. Qed.
 
 Hint Resolve is_align_no_overflow valid_align.
-
+(*
 Definition global_pos x := 
   omap (fun z => (z, vtype x)) (Mvar.get pmap.(globals) x).
 
@@ -88,85 +145,156 @@ Record wf_pos (get : var -> option (Z * stype)) size := {
              x <> y ->
              get x = Some (xofs, xty) -> get y = Some (yofs, yty) ->
              xofs + size_of xty <= yofs \/ yofs + size_of yty <= xofs;
+}.*)
+
+Record wf_global g ofs ws := {
+  wfg_slot : Sv.In g Slots;
+  wfg_writable : ~~ Writable g;
+  wfg_align : is_align (Addr g) ws;
+  wfg_offset : wunsigned rip + ofs = wunsigned (Addr g)
 }.
 
-Class wf_regptr := {
-  wt_rip   : vtype pmap.(vrip) = sword Uptr;
-  wt_rsp   : vtype pmap.(vrsp) = sword Uptr;
-  wt_rptr  : forall x p, get_local pmap x = Some (Pregptr p) -> vtype p = sword Uptr;
-  wf_ptr   : forall x, (exists p, get_local pmap x = Some (Pregptr p)) \/
-                       (exists z, get_local pmap x = Some (Pstkptr z)) ->
-                       is_sarr (vtype x);
-  disj_ptr : forall x xp, 
-              get_local pmap x = Some (Pregptr xp) -> 
-              [/\ xp <> pmap.(vrip), xp <> pmap.(vrsp), Sv.In xp pmap.(vnew) &
-                  forall y yp, x <> y -> 
-                               get_local pmap y = Some (Pregptr yp) -> xp <> yp];
+Definition wbase_ptr sc :=
+  if sc == Sglob then rip else rsp.
+
+Record wf_direct (s : slot) ofs ws sub sc := {
+  wfd_slot : Sv.In s Slots;
+  wfd_sub : 0 <= sub.(smp_ofs) /\ sub.(smp_ofs) + sub.(smp_len) <= size_slot s;
+  wfd_writable : Writable s = (sc != Sglob);
+  wfd_align : is_align (Addr s) ws;
+  wfd_offset : wunsigned (wbase_ptr sc) + ofs = wunsigned (Addr s)
+}.
+
+(* TODO : move elsewhere *)
+Notation spointer := (sword Uptr).
+
+Record wf_regptr x xr := {
+  wfr_type : is_sarr (vtype x);
+  wfr_rtype : vtype xr = spointer;
+  wfr_not_vrip : xr <> pmap.(vrip);
+  wfr_not_vrsp : xr <> pmap.(vrsp);
+  wfr_new : Sv.In xr pmap.(vnew);
+  wfr_distinct : forall y yr,
+    get_local pmap y = Some (Pregptr yr) -> x <> y -> xr <> yr
+}.
+
+Record wf_stkptr (x : var) (s : slot) ofs ws sub (xf : var) := {
+  wfs_slot : Sv.In s Slots;
+  wfs_type : is_sarr (vtype x);
+  wfs_size : wsize_size Uptr <= sub.(smp_len);
+  wfs_sub : 0 <= sub.(smp_ofs) /\ sub.(smp_ofs) + sub.(smp_len) <= size_slot s;
+  wfs_writable : Writable s;
+  wfs_align : is_align (Addr s) ws;
+  wfs_offset : wunsigned rsp + ofs = wunsigned (Addr s);
+  wfs_ftype : vtype xf = spointer;
+  wfs_new : Sv.In xf pmap.(vnew);
+  wfs_distinct :forall y s' ofs' ws' sub' yf,
+    get_local pmap y = Some (Pstkptr s' ofs' ws' sub' yf) -> x <> y -> xf <> yf
+}.
+
+(* ou faire un match *)
+Class wf_local := {
+  wf_directs : forall x s ofs ws sub sc, get_local pmap x = Some (Pdirect s ofs ws sub sc) ->
+    wf_direct s ofs ws sub sc;
+  wf_regptrs : forall x xr, get_local pmap x = Some (Pregptr xr) ->
+    wf_regptr x xr;
+  wf_stkptrs : forall x s ofs ws sub xf, get_local pmap x = Some (Pstkptr s ofs ws sub xf) ->
+    wf_stkptr x s ofs ws sub xf
 }.
 
 Class wf_pmap := {
+  wt_rip   : vtype pmap.(vrip) = sword Uptr;
+  wt_rsp   : vtype pmap.(vrsp) = sword Uptr;
   rip_in_new : Sv.In pmap.(vrip) pmap.(vnew);
   rsp_in_new : Sv.In pmap.(vrsp) pmap.(vnew);
-  wt_regptr  :> wf_regptr;
-  wf_globals :> wf_pos global_pos glob_size;
-  wf_locals  :> wf_pos local_pos stk_size;
+  wf_globals : forall g ofs ws, Mvar.get pmap.(globals) g = Some (ofs, ws) -> wf_global g ofs ws;
+  wf_locals : wf_local
 }.
 
-Declare Instance wf_pmapI : wf_pmap.
+(* Declare Instance wf_pmapI : wf_pmap. *)
 
-Definition valid_mp mp ty := 
+Record wf_mp_sub (x : var) (mp : mem_pos) (sub : sub_mp) := {
+  wfms_slot : Sv.In mp.(mp_s) Slots;
+  wfms_size : size_slot x <= sub.(smp_len);
+  wfms_sub : 0 <= sub.(smp_ofs) /\ sub.(smp_ofs) + sub.(smp_len) <= size_slot mp.(mp_s);
+  wfms_writable : Writable mp.(mp_s) = mp.(mp_writable);
+  wfms_align : Align mp.(mp_s) = mp.(mp_align);
+}.
+
+Definition wf_var_region (rmap : regions) :=
+  forall x mps, Mvar.get rmap.(var_region) x = Some mps ->
+  let mp := mps.(mps_mp) in
+  let sub := mps.(mps_sub) in
+  wf_mp_sub x mp sub.
+
+(* TODO :
+  - invariant : si une variable n'est pas un tableau, alors sa région a exactement sa taille (peut-être pas nécessaire)
+  - gros invariant restant : parler des bytes valides !
+  - invariant : si je suis dans local_map, je ne suis ni int ni bool
+  - dire des trucs sur la map region_var
+*)
+
+(*Definition valid_mp mp ty := 
   exists x, 
     subtype ty (vtype x) /\
     if mp.(mp_s) == MSglob then get_global pmap x = ok mp.(mp_ofs)
     else get_local pmap x = Some (Pstack mp.(mp_ofs)).
-
+*)
 Definition eq_vm (vm1 vm2:vmap) := 
   forall (x:var), get_local pmap x = None -> get_var vm1 x = get_var vm2 x.
 
+(*
 Definition wptr ms := 
   if ms == MSglob then rip else rsp.
 
-Definition wptr_size ms :=
-  if ms == MSstack then stk_size else glob_size.
+Definition wptr_size sc :=
+  if sc == Sglob then glob_size else stk_size.
 
 Definition disjoint_ptr m :=
   forall w sz ms,
     valid_pointer m w sz ->
-    ~ ( wunsigned (wptr ms) < wunsigned w + wsize_size sz /\ wunsigned w < wunsigned (wptr ms) + wptr_size ms).
+    ~ ( wunsigned (wbase_ptr ms) < wunsigned w + wsize_size sz /\ wunsigned w < wunsigned (wbase_ptr ms) + wptr_size ms).
+*)
+Definition mps_addr mps :=
+  (Addr mps.(mps_mp).(mp_s) + wrepr _ mps.(mps_sub).(smp_ofs))%R.
 
-Definition mp_addr mp := 
-  (wptr mp.(mp_s) + wrepr _ mp.(mp_ofs))%R.
-
-Definition eq_mp_word (m2:mem) mp sz v := 
+Definition eq_mp_word (m2:mem) mps bytes sz v := 
   exists w:word sz, 
-    v = Vword w /\ read_mem m2 (mp_addr mp) sz = ok w.
+    v = Vword w /\ (ByteSet.mem bytes {| imin := 0; imax := wsize_size sz |} -> read_mem m2 (mps_addr mps) sz = ok w).
 
-Definition eq_mp_array (m2:mem) mp s v := 
+Definition eq_mp_array (m2:mem) mps bytes s v := 
   exists (a:WArray.array s),
    v = Varr a /\
    forall off, (0 <= off < Zpos s)%Z ->
+     ByteSet.memi bytes off ->
      forall v, WArray.get AAscale U8 a off = ok v ->
-     read_mem m2 (wptr mp.(mp_s) + (wrepr _ (off + mp.(mp_ofs)))) U8 = ok v.
+     read_mem m2 (mps_addr mps + wrepr _ off) U8 = ok v.
 
-Definition eq_mp_val ty (m2:mem) mp v := 
+Definition eq_mp_val ty (m2:mem) mps bytes v := 
   match ty with
-  | sword ws => eq_mp_word m2 mp ws v
-  | sarr  s  => eq_mp_array m2 mp s v 
-  | _        => True
+  | sword ws => eq_mp_word m2 mps bytes ws v
+  | sarr  s  => eq_mp_array m2 mps bytes s v 
+  | _        => False
   end.
-  
+
 Variable (P: uprog) (ev: extra_val_t (progT := progUnit)).
 Notation gd := (p_globs P).
 
-Definition valid_pk pk mp (s2:estate) := 
+(* il faut parler de bytes aussi pour le cas stkptr notamment : dire que si
+   les bytes associées à f sont valides alors tout marche *)
+Definition valid_pk (s2:estate) mps pk :=
   match pk with
-  | Pstack z => mp = {| mp_s := MSstack; mp_ofs := z |}
-  | Pstkptr z => 
-    read_mem s2.(emem) (mp_addr {| mp_s := MSstack; mp_ofs := z |}) Uptr = ok (mp_addr mp)
+  | Pdirect s ofs ws sub sc =>
+    mps = {| mps_mp := {| mp_s := s; mp_align := ws; mp_writable := true |}; mps_sub := sub |}
+  | Pstkptr s ofs ws sub f =>
+    mps = {| mps_mp := {| mp_s := s; mp_align := ws; mp_writable := true |}; mps_sub := sub |}
+    /\
+    read_mem s2.(emem) (mps_addr mps) Uptr = ok (mps_addr mps)
   | Pregptr p =>
-    get_var s2.(evm) p = ok (Vword (mp_addr mp))
+    get_var s2.(evm) p = ok (Vword (mps_addr mps))
   end.
-   
+
+(*
 Definition check_gvalid rmap x := 
   if is_glob x then 
     omap (fun ofs => {| mp_s := MSglob; mp_ofs := ofs |}) (Mvar.get pmap.(globals) (gv x))
@@ -222,6 +350,16 @@ Class valid_state (rmap:regions) (m0:mem) (s1:estate) (s2:estate) := {
    vs_eq_mem    : eq_glob s1.(emem) s2.(emem);
    vs_eq_not_mod: eq_not_mod m0 s2.(emem);
 }.
+*)
+
+(* could we put [ms] as section variable ? it should not be modified? *)
+Class valid_state (rmap : regions) (ms : mem) (s1 s2 : estate) := {
+  vs_slot_valid : slot_valid s2.(emem);
+  vs_disjoint : disjoint_source ms;
+  vs_wf_pmap  :> wf_pmap;
+  vs_wf_region : wf_var_region rmap;
+  vs_eq_vm     : eq_vm s1.(evm) s2.(evm);
+}.
 
 (* -------------------------------------------------------------------------- *)
 
@@ -268,17 +406,18 @@ Proof.
   by rewrite !zero_extend_u wrepr_add wrepr_mul GRing.mulrC. 
 Qed.
 
+(* this is about two ojects from [memory_example]. MOVE ? *)
 Lemma validr_valid_pointer (m1:mem) p ws : is_ok (validr m1 p ws) = valid_pointer m1 p ws.
 Proof.
   case: (Memory.readV m1 p ws); rewrite Memory.readP /CoreMem.read.
   + by move=> [w]; case: validr.
   by case: validr => //= _ [];eauto.
 Qed.
-
-Lemma check_validP rmap x mp : 
-  check_valid rmap x = ok mp <->
-  (Mvar.get (var_region rmap) x = Some mp /\
-   exists xs,  Mmp.get (region_vars rmap) mp = Some xs /\ Sv.In x xs).
+(*
+Lemma check_validP rmap x mps : 
+  check_valid rmap x = ok mps <->
+  (Mvar.get (var_region rmap) x = Some mps /\
+   exists xs,  Mmp.get (region_var rmap) mps = Some xs /\ Sv.In x xs).
 Proof.
   rewrite /check_valid.
   case heq: Mvar.get => [mp' |]; last by intuition.
@@ -288,11 +427,14 @@ Proof.
     by split => //;exists xs.
   by split => // -[] [?]; subst mp'; rewrite heq1 => -[xs'] [[<-]] /hin.
 Qed.
-
+*)
 Section EXPR.
   Variables (rmap:regions) (m0:mem) (s:estate) (s':estate).
   Hypothesis (hvalid: valid_state rmap m0 s s').
 
+  (* If [x] is a register : it is not impacted by the presence of global
+     variables per hypothesis [vm_eq_vm]
+  *)
   Lemma get_var_kindP x v:
     get_var_kind pmap x = ok None -> 
     get_gvar gd (evm s) x = ok v ->
@@ -304,17 +446,26 @@ Section EXPR.
     by rewrite !get_gvar_nglob // heq.
   Qed.
 
-  Lemma check_mk_addr_ptr (x:var_i) aa ws xi ei e1 i1 pk mp :
+  (* If [x] is a local variable *)
+  Lemma check_mk_addr_ptr (x:var_i) aa ws xi ei e1 i1 pk mps :
+    (* si e1 est évalué à un entier dans s' *)
     sem_pexpr [::] s' e1 >>= to_int = ok i1 ->
+    (* x est associé à pk par l'oracle *)
     get_local pmap x = Some pk ->
-    Mvar.get (var_region rmap) x = Some mp ->
-    is_align (wrepr Uptr mp.(mp_ofs)) ws ->
+    (* x est associé à mps dans la region_map *)
+    Mvar.get (var_region rmap) x = Some mps ->
+    (* mps est aligné sur ws *)
+    is_align (wrepr Uptr mps.(mps_sub).(smp_ofs)) ws ->
+    (* mk_addr_ptr renvoie xi et ei *)
     mk_addr_ptr pmap x aa ws pk e1 = ok (xi, ei) ->
     ∃ (wx wi : u64),
       [/\ Let x := get_var (evm s') xi in to_pointer x = ok wx,
-          Let x := sem_pexpr [::] s' ei in to_pointer x = ok wi, (mp_addr mp + wrepr U64 (i1 * mk_scale aa ws))%R = (wx + wi)%R
-          & is_align (mp_addr mp) ws].
+          Let x := sem_pexpr [::] s' ei in to_pointer x = ok wi, (mps_addr mps + wrepr U64 (i1 * mk_scale aa ws))%R = (wx + wi)%R
+          & is_align (mps_addr mps) ws].
   Proof.
+  Admitted.
+  
+  (*
     move=> he1 hloc hgetr hal.
     rewrite /mk_addr_ptr; assert (h := wfr_ptr hgetr).
     case: h => [pk' []]; rewrite hloc => -[?]; subst pk'.
@@ -330,19 +481,20 @@ Section EXPR.
     + by f_equal; rewrite !(wrepr_add, wrepr_mul, wrepr0); ssrring.ssring.
     by case: (mp) hal => -[] /= ofs ?; apply is_align_add.
   Qed.
-
+*)
   Lemma check_mk_addr x vpk aa ws t xi ei e1 i1: 
     sem_pexpr [::] s' e1 >>= to_int = ok i1 ->
     get_var_kind pmap x = ok (Some vpk) ->
-    check_vpk_word rmap (gv x) vpk ws = ok t ->
+    check_vpk_word rmap (gv x) vpk (Some 0%Z) ws = ok t ->
     mk_addr pmap (gv x) aa ws vpk e1 = ok (xi, ei) ->
     exists mp wx wi, 
-    [/\ check_gvalid rmap x = Some mp,
+    [/\ (*check_gvalid rmap x = Some mp,*)
         get_var (evm s') xi >>= to_pointer = ok wx,
         sem_pexpr [::] s' ei >>= to_pointer = ok wi, 
-        (mp_addr mp + wrepr Uptr (i1 * mk_scale aa ws)%Z = wx + wi)%R & 
-        is_align (mp_addr mp) ws].
+        (mps_addr mp + wrepr Uptr (i1 * mk_scale aa ws)%Z = wx + wi)%R & 
+        is_align (mps_addr mp) ws].
   Proof.
+  Admitted. (*
     move=> he1; rewrite /get_var_kind /check_vpk_word /mk_addr /with_var.
     case: ifP => hglob.
     + t_xrbindP => ofs /get_globalP hget <- /assertP halign [<-] <-.
@@ -445,7 +597,7 @@ Section EXPR.
     + by rewrite /mp_addr !wrepr_add; ssrring.ssring.
     by rewrite CoreMem.uread8_get Memory.addP => ->.
   Qed.
-
+*)
   Let X e : Prop :=
     ∀ e' v,
       alloc_e pmap rmap e = ok e' →
@@ -476,8 +628,18 @@ Section EXPR.
       + by move=> [<-]; apply: get_var_kindP hgvk.
       case hty: is_word_type => [ws | //]; move /is_word_typeP: hty => hty.
       t_xrbindP => ? hcheck [xi ei] haddr <- /=.
-      have h0: Let x := sem_pexpr [::] s' 0 in to_int x = ok 0 by done.
-      have [mp [wx [wi [hgval -> -> /= <- hal ]]]]:= check_mk_addr h0 hgvk hcheck haddr.
+      rewrite /check_vpk_word in hcheck.
+      move: vpk hgvk haddr hcheck => [[ofs ws']|p] hgvk haddr hcheck.
+      rewrite /get_var_kind in hgvk. move: hgvk. case: is_glob.
+      t_xrbindP. move=> [ofs' ws''] /get_globalP /wf_globals.
+      move=> wfg. destruct wfg. wf_global
+      wf_globals
+      get_var_kind
+      have [|] := vpk in *. => {vpk}.
+      have h0: sem_pexpr [::] s' 0 >>= to_int = ok 0 by done.
+      valid_state slot_valid
+      have H:= check_mk_addr h0 hgvk hcheck haddr.
+      have [mp [wx [wi [-> -> /= <- hal ]]]]:= check_mk_addr h0 hgvk hcheck haddr.
       by move=> /(wfr_val hgval); rewrite hty wrepr0 GRing.addr0 => -[ w [-> ->]].
     + move=> aa sz x e1 he1 e' v he'; apply: on_arr_gvarP => n t hty /= hget.
       t_xrbindP => i vi /he1{he1}he1 hvi w hw <-.
@@ -1429,7 +1591,6 @@ Search _ is_Pvar.
 Print is_lv_var.
 Search _ is_lv_var.
 *)
-(*
 Local Lemma Hassgn : sem_Ind_assgn P Pi_r.
 Proof.
   move=> s1 s2 x tag ty e v v' hv htr hw rmap1 rmap2 ii1 ii2 i2 /=.
@@ -1760,7 +1921,7 @@ Proof.
   + by move=> [?]; subst fn3 fd3; exists fd2; rewrite H.
   by move=> /hm.
 Qed.
-*)
+
 Definition extend_mem (m1:mem) (m2:mem) (rip:pointer) (data: seq u8) :=
   let glob_size := Z.of_nat (size data) in
   [/\ wunsigned rip + glob_size <= wbase U64 /\
@@ -1773,7 +1934,7 @@ Definition extend_mem (m1:mem) (m2:mem) (rip:pointer) (data: seq u8) :=
       (forall i, 
          0 <= i < glob_size ->
          read_mem m2 (rip + wrepr U64 i) U8 = ok (nth (wrepr U8 0) data (Z.to_nat i)))].
-(*
+
 Lemma all_In (T:Type) (P: T -> bool) (l:seq T) x :
   all P l ->
   List.In x l -> P x.
@@ -2050,7 +2211,6 @@ Transparent Z.to_nat.
   move: hap hssem => /=; rewrite /alloc_prog.
   by case: oracle_g => -[???]; t_xrbindP => ??; case:ifP => // ?; t_xrbindP => ?? <-.
 Qed.
-*)
 
 Definition alloc_ok (SP:sprog) fn m2 :=
   forall fd, get_fundef (p_funcs SP) fn = Some fd ->
@@ -2067,8 +2227,6 @@ Lemma alloc_progP nrip data oracle_g oracle (P: uprog) (SP: sprog) fn:
       extend_mem m1' m2' rip SP.(p_extra).(sp_globs) /\
       sem_call (sCP := sCP_stack) SP rip m2 fn va m2' vr'.
 Proof.
-Admitted.
-(*
   move=> Hcheck ev m1 va m1' vr rip hsem m2 he ha.
   have [fd hget]: exists fd, get_fundef (p_funcs P) fn = Some fd.
   + by case: hsem=> ??? fd *;exists fd.
@@ -2076,4 +2234,3 @@ Admitted.
   have [fd' [hgetS ?]]:= hf _ _ hget.
   by apply: (alloc_fdP Hcheck hget hgetS hsem he (ha _ hgetS)).
 Qed.
-*)
