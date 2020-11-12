@@ -140,10 +140,10 @@ Record wf_global g ofs ws := {
 Definition wbase_ptr sc :=
   if sc == Sglob then rip else rsp.
 
-Record wf_direct (x : var) (s : slot) ofs ws sub sc := {
+Record wf_direct (x : var) (s : slot) ofs ws z sc := {
   wfd_slot : Sv.In s Slots;
-  wfd_size : size_slot x <= sub.(smp_len);
-  wfd_sub : 0 <= sub.(smp_ofs) /\ sub.(smp_ofs) + sub.(smp_len) <= size_slot s;
+  wfd_size : size_slot x <= z.(z_len);
+  wfd_zone : 0 <= z.(z_ofs) /\ z.(z_ofs) + z.(z_len) <= size_slot s;
   wfd_writable : Writable s = (sc != Sglob);
   wfd_align : Align s = ws;
   wfd_offset : Addr s = (wbase_ptr sc + wrepr Uptr ofs)%R
@@ -162,26 +162,26 @@ Record wf_regptr x xr := {
     get_local pmap y = Some (Pregptr yr) -> x <> y -> xr <> yr
 }.
 
-Record wf_stkptr (x : var) (s : slot) ofs ws sub (xf : var) := {
+Record wf_stkptr (x : var) (s : slot) ofs ws z (xf : var) := {
   wfs_slot : Sv.In s Slots;
   wfs_type : is_sarr (vtype x);
-  wfs_size : wsize_size Uptr <= sub.(smp_len);
-  wfs_sub : 0 <= sub.(smp_ofs) /\ sub.(smp_ofs) + sub.(smp_len) <= size_slot s;
+  wfs_size : wsize_size Uptr <= z.(z_len);
+  wfs_zone : 0 <= z.(z_ofs) /\ z.(z_ofs) + z.(z_len) <= size_slot s;
   wfs_writable : Writable s;
   wfs_align : Align s = ws;
   wfs_offset : Addr s = (rsp + wrepr Uptr ofs)%R;
   wfs_ftype : vtype xf = spointer;
   wfs_new : Sv.In xf pmap.(vnew);
-  wfs_distinct : forall y s' ofs' ws' sub' yf,
-    get_local pmap y = Some (Pstkptr s' ofs' ws' sub' yf) -> x <> y -> xf <> yf
+  wfs_distinct : forall y s' ofs' ws' z' yf,
+    get_local pmap y = Some (Pstkptr s' ofs' ws' z' yf) -> x <> y -> xf <> yf
 }.
 
 (* ou faire un match *)
 Definition wf_local x pk :=
   match pk with
-  | Pdirect s ofs ws sub sc => wf_direct x s ofs ws sub sc
+  | Pdirect s ofs ws z sc => wf_direct x s ofs ws z sc
   | Pregptr xr => wf_regptr x xr
-  | Pstkptr s ofs ws sub xf => wf_stkptr x s ofs ws sub xf
+  | Pstkptr s ofs ws z xf => wf_stkptr x s ofs ws z xf
   end.
 
 Class wf_pmap := {
@@ -196,24 +196,25 @@ Class wf_pmap := {
 (* Declare Instance wf_pmapI : wf_pmap. *)
 
 (* Well-formedness of a [mp]. *)
-Record wf_mp (mp : mem_pos) := {
-  wfmp_slot     : Sv.In mp.(mp_s) Slots;
-  wfmp_writable : Writable mp.(mp_s) = mp.(mp_writable);
-  wfmp_align    : Align mp.(mp_s) = mp.(mp_align);
+Record wf_region (r : region) := {
+  wfr_slot     : Sv.In r.(r_slot) Slots;
+  wfr_writable : Writable r.(r_slot) = r.(r_writable);
+  wfr_align    : Align r.(r_slot) = r.(r_align);
 }.
 
-(* Well-formedness of a [mps]. *)
-Record wf_mps (mps : mem_pos_sub) := {
-  wfms_mp  :> wf_mp mps.(mps_mp);
-  wfms_len : 0 < mps.(mps_sub).(smp_len);
-  wfms_sub : 0 <= mps.(mps_sub).(smp_ofs) /\ mps.(mps_sub).(smp_ofs) + mps.(mps_sub).(smp_len) <= size_slot mps.(mps_mp).(mp_s);
+(* Well-formedness of a [sub_region]. *)
+Record wf_sub_region (sr : sub_region) := {
+  wfsr_region :> wf_region sr.(sr_region);
+  wfsr_len    : 0 < sr.(sr_zone).(z_len);
+  wfsr_sub    : 0 <= sr.(sr_zone).(z_ofs) /\ sr.(sr_zone).(z_ofs) + sr.(sr_zone).(z_len) <= size_slot sr.(sr_region).(r_slot);
 }.
 
-Definition wf_var_region (rmap : regions) :=
-  forall x mps, Mvar.get rmap.(var_region) x = Some mps ->
-  size_slot x <= mps.(mps_sub).(smp_len)
+(* TODO: Tout exprimer à partier de check_gvalid ? *)
+Definition wf_var_region (rmap : region_map) :=
+  forall x sr, Mvar.get rmap.(var_region) x = Some sr ->
+  size_slot x <= sr.(sr_zone).(z_len)
   /\
-  wf_mps mps.
+  wf_sub_region sr.
 
 (* TODO :
   - invariant : si une variable n'est pas un tableau, alors sa région a exactement sa taille (peut-être pas nécessaire)
@@ -245,26 +246,28 @@ Definition disjoint_ptr m :=
     valid_pointer m w sz ->
     ~ ( wunsigned (wbase_ptr ms) < wunsigned w + wsize_size sz /\ wunsigned w < wunsigned (wbase_ptr ms) + wptr_size ms).
 *)
-Definition mps_addr mps :=
-  (Addr mps.(mps_mp).(mp_s) + wrepr _ mps.(mps_sub).(smp_ofs))%R.
+Definition sub_region_addr sr :=
+  (Addr sr.(sr_region).(r_slot) + wrepr _ sr.(sr_zone).(z_ofs))%R.
 
 (* TODO : could we merge [eq_mp_word] and [eq_mp_array] ? *)
-Definition eq_mp_word (m2:mem) mps bytes sz v := 
-  exists w:word sz, 
-    v = Vword w /\ (ByteSet.mem bytes {| imin := 0; imax := wsize_size sz |} -> read_mem m2 (mps_addr mps) sz = ok w).
+Definition eq_mp_word (m2:mem) sr bytes sz v := 
+  exists w:word sz,
+    v = Vword w /\
+    (ByteSet.mem bytes {| imin := 0; imax := wsize_size sz |} ->
+      read_mem m2 (sub_region_addr sr) sz = ok w).
 
-Definition eq_mp_array (m2:mem) mps bytes s v := 
+Definition eq_mp_array (m2:mem) sr bytes s v := 
   exists (a:WArray.array s),
    v = Varr a /\
    forall off, (0 <= off < Zpos s)%Z ->
      ByteSet.memi bytes off ->
      forall v, WArray.get AAscale U8 a off = ok v ->
-     read_mem m2 (mps_addr mps + wrepr _ off) U8 = ok v.
+     read_mem m2 (sub_region_addr sr + wrepr _ off) U8 = ok v.
 
-Definition eq_mp_val ty (m2:mem) mps bytes v := 
+Definition eq_mp_val ty (m2:mem) sr bytes v := 
   match ty with
-  | sword ws => eq_mp_word m2 mps bytes ws v
-  | sarr  s  => eq_mp_array m2 mps bytes s v 
+  | sword ws => eq_mp_word m2 sr bytes ws v
+  | sarr  s  => eq_mp_array m2 sr bytes s v 
   | _        => False
   end.
 
@@ -273,39 +276,40 @@ Notation gd := (p_globs P).
 
 (* FIXME : il faut parler de bytes aussi pour le cas stkptr notamment : dire que si
    les bytes associées à f sont valides alors tout marche *)
-Definition valid_pk (s2:estate) mps pk :=
+Definition valid_pk (s2:estate) sr pk :=
   match pk with
-  | Pdirect s ofs ws sub sc =>
-    mps = {| mps_mp := {| mp_s := s; mp_align := ws; mp_writable := true |}; mps_sub := sub |}
-  | Pstkptr s ofs ws sub f =>
-    mps = {| mps_mp := {| mp_s := s; mp_align := ws; mp_writable := true |}; mps_sub := sub |}
+  | Pdirect s ofs ws z sc =>
+    sr = {| sr_region := {| r_slot := s; r_align := ws; r_writable := true |}; sr_zone := z |}
+  | Pstkptr s ofs ws z f =>
+    sr = {| sr_region := {| r_slot := s; r_align := ws; r_writable := true |}; sr_zone := z |}
     /\
-    read_mem s2.(emem) (mps_addr mps) Uptr = ok (mps_addr mps)
+    read_mem s2.(emem) (sub_region_addr sr) Uptr = ok (sub_region_addr sr)
   | Pregptr p =>
-    get_var s2.(evm) p = ok (Vword (mps_addr mps))
+    get_var s2.(evm) p = ok (Vword (sub_region_addr sr))
   end.
 
 (* TODO: could we have this in stack_alloc.v ?
+   -> could be used in check_valid/set_arr_word...
    This could mean useless checks for globals, but maybe worth it
    cf. check_vpk_word ?
    Not clear : one advantage of using vpk is to avoid two calls to
    pmap.(globals) and pmap.(locals)
-   Could pmap.(globlals) and pmap.(locals) directly return mps ?
+   Could pmap.(globlals) and pmap.(locals) directly return sub_regions ?
 *)
-Definition check_gvalid rmap x : option (mem_pos_sub * ByteSet.t) :=
+Definition check_gvalid rmap x : option (sub_region * ByteSet.t) :=
   if is_glob x then 
     omap (fun ofs =>
-      let mps := mps_glob x.(gv) ofs in
-      let bytes := ByteSet.full (interval_of_sub mps.(mps_sub)) in
-      (mps, bytes)) (Mvar.get pmap.(globals) (gv x))
-  else 
-    let mps := get_mps rmap x.(gv) in
-    match mps with
-    | Ok mps =>
-      let sm := get_sub_map mps.(mps_mp) rmap in
-      let bm := get_bytes_map mps.(mps_sub) sm in
+      let sr := sub_region_glob x.(gv) ofs in
+      let bytes := ByteSet.full (interval_of_zone sr.(sr_zone)) in
+      (sr, bytes)) (Mvar.get pmap.(globals) (gv x))
+  else
+    let sr := Mvar.get rmap.(var_region) x.(gv) in
+    match sr with
+    | Some sr =>
+      let zm := get_zone_map sr.(sr_region) rmap in
+      let bm := get_bytes_map sr.(sr_zone) zm in
       let bytes := get_bytes x.(gv) bm in
-      Some (mps, bytes)
+      Some (sr, bytes)
     | _ => None
     end.
 
@@ -316,16 +320,16 @@ Definition check_gvalid rmap x : option (mem_pos_sub * ByteSet.t) :=
 Definition wfr_VALID (rmap:regions) :=
    forall x mp, Mvar.get rmap.(var_region) x = Some mp -> valid_mp mp (vtype x).
 *)
-Definition wfr_VAL (rmap:regions) (s1:estate) (s2:estate) :=
-  forall x mps bytes v, check_gvalid rmap x = Some (mps, bytes) -> 
+Definition wfr_VAL (rmap:region_map) (s1:estate) (s2:estate) :=
+  forall x sr bytes v, check_gvalid rmap x = Some (sr, bytes) -> 
     get_gvar gd s1.(evm) x = ok v ->
-    eq_mp_val (vtype (gv x)) s2.(emem) mps bytes v.
+    eq_mp_val (vtype (gv x)) s2.(emem) sr bytes v.
 
-Definition wfr_PTR (rmap:regions) (s2:estate) :=
-  forall x mps, Mvar.get (var_region rmap) x = Some mps ->
-    exists pk, get_local pmap x = Some pk /\ valid_pk s2 mps pk. 
+Definition wfr_PTR (rmap:region_map) (s2:estate) :=
+  forall x sr, Mvar.get (var_region rmap) x = Some sr ->
+    exists pk, get_local pmap x = Some pk /\ valid_pk s2 sr pk.
 
-Class wf_region (rmap:regions) (s1:estate) (s2:estate) := {  
+Class wf_rmap (rmap:region_map) (s1:estate) (s2:estate) := {  
 (*   wfr_valid_mp :  wfr_VALID rmap; *)
   wfr_val : wfr_VAL rmap s1 s2;
   wfr_ptr : wfr_PTR rmap s2;
@@ -358,14 +362,14 @@ Class valid_state (rmap:regions) (m0:mem) (s1:estate) (s2:estate) := {
 Hypothesis wf_pmap0 : wf_pmap.
 
 (* FIXME: could we put [ms] as section variable ? it should not be modified? *)
-Class valid_state (rmap : regions) (ms : mem) (s1 s2 : estate) := {
+Class valid_state (rmap : region_map) (ms : mem) (s1 s2 : estate) := {
   vs_slot_valid : slot_valid s2.(emem);
   vs_disjoint   : disjoint_source ms;
   vs_rip        : get_var (evm s2) pmap.(vrip) = ok (Vword rip);
   vs_rsp        : get_var (evm s2) pmap.(vrsp) = ok (Vword rsp);
   vs_wf_region  : wf_var_region rmap;
   vs_eq_vm      : eq_vm s1.(evm) s2.(evm);
-  vs_wf_region2 :> wf_region rmap s1 s2
+  vs_wf_region2 :> wf_rmap rmap s1 s2
 }.
 
 (* -------------------------------------------------------------------------- *)
@@ -436,7 +440,7 @@ Proof.
 Qed.
 *)
 Section EXPR.
-  Variables (rmap:regions) (m0:mem) (s:estate) (s':estate).
+  Variables (rmap:region_map) (m0:mem) (s:estate) (s':estate).
   Hypothesis (hvalid: valid_state rmap m0 s s').
 
   (* If [x] is a register : it is not impacted by the presence of global
@@ -479,13 +483,13 @@ Section EXPR.
       rewrite -Z.land_ones.
   Qed.
 
-  Lemma slot_wrepr mps : wf_mps mps -> wunsigned (wrepr U64 mps.(mps_sub).(smp_ofs)) = mps.(mps_sub).(smp_ofs).
+  Lemma slot_wrepr sr : wf_sub_region sr -> wunsigned (wrepr U64 sr.(sr_zone).(z_ofs)) = sr.(sr_zone).(z_ofs).
   Proof.
     move=> hwf; rewrite wunsigned_repr -/(wbase Uptr).
-    have hlen := wfms_len hwf.
-    have hofs := wfms_sub hwf.
-    have /ZleP hno := addr_no_overflow (wfmp_slot hwf).
-    have [hrange _] := wunsigned_range (Addr (mp_s (mps_mp mps))).
+    have hlen := wfsr_len hwf.
+    have hofs := wfsr_sub hwf.
+    have /ZleP hno := addr_no_overflow (wfr_slot hwf).
+    have [hrange _] := wunsigned_range (Addr sr.(sr_region).(r_slot)).
     by apply Zmod_small; split; lia.
   Qed.
 
@@ -493,19 +497,22 @@ Section EXPR.
   Lemma check_validP x ofs len mps :
     check_valid rmap x.(gv) ofs len = ok (mps) ->
 *)
-  Lemma check_alignP mps ws tt : wf_mps mps -> check_align mps ws = ok tt ->
-    is_align (mps_addr mps) ws.
+  Lemma check_alignP sr ws tt : wf_sub_region sr -> check_align sr ws = ok tt ->
+    is_align (sub_region_addr sr) ws.
   Proof.
     move=> hwf; rewrite /check_align; t_xrbindP => ? /assertP halign /assertP /eqP halign2.
-    rewrite /mps_addr; apply: is_align_add.
-    + apply: (is_align_le halign). rewrite -(wfmp_align hwf) //. by apply: slot_align; apply: (wfmp_slot hwf).
+    rewrite /sub_region_addr; apply: is_align_add.
+    + apply: (is_align_le halign); rewrite -(wfr_align hwf).
+      by apply: slot_align; apply: (wfr_slot hwf).
     by apply is_align_mod; apply Zland_mod; rewrite slot_wrepr.
   Qed.
 
-  Lemma mp_glob_wf x ofs_align : Mvar.get (globals pmap) x = Some ofs_align -> wf_mp (mp_glob x ofs_align).
+  Lemma region_glob_wf x ofs_align :
+    Mvar.get (globals pmap) x = Some ofs_align ->
+    wf_region (region_glob x ofs_align).
   Proof.
     case: ofs_align=> ofs ws.
-    by move=> /wf_globals [*]; rewrite /mp_glob; split=> //=; apply /idP.
+    by move=> /wf_globals [*]; rewrite /region_glob; split=> //=; apply /idP.
   Qed.
 
   Lemma size_of_pos ty : 0 < size_of ty.
@@ -514,107 +521,94 @@ Section EXPR.
   Lemma size_slot_pos sl : 0 < size_slot sl.
   Proof. by apply size_of_pos. Qed.
 
-  Lemma get_mpsP x mps : get_mps rmap x = ok mps <-> Mvar.get rmap.(var_region) x = Some mps.
+  Lemma get_sub_regionP x sr : get_sub_region rmap x = ok sr <-> Mvar.get rmap.(var_region) x = Some sr.
   Proof.
-    rewrite /get_mps; case: Mvar.get; last by split.
+    rewrite /get_sub_region; case: Mvar.get; last by split.
     by move=> ?; split => -[->].
   Qed.
 
-  Lemma get_mps_wf x mps : get_mps rmap x = ok mps -> size_slot x <= smp_len (mps_sub mps) /\ wf_mps mps.
-  Proof.
-    by move /get_mpsP; apply: vs_wf_region.
-  Qed.
-
-  Lemma check_vpkP x vpk ofs len mps :
+  Lemma check_vpkP x vpk ofs len sr :
     (forall zofs, ofs = Some zofs -> 0 <= zofs /\ zofs + len <= size_slot x.(gv)) ->
     0 < len ->
     get_var_kind pmap x = ok (Some vpk) ->
-    check_vpk rmap x.(gv) vpk ofs len = ok mps ->
-    exists mps' bytes,
-      [/\ check_gvalid rmap x = Some (mps', bytes),
-      let sub_ofs  := sub_ofs mps'.(mps_sub) ofs len in
-      let isub_ofs := interval_of_sub sub_ofs in
+    check_vpk rmap x.(gv) vpk ofs len = ok sr ->
+    exists sr' bytes,
+      [/\ check_gvalid rmap x = Some (sr', bytes),
+      let sub_ofs  := sub_zone_at_ofs sr'.(sr_zone) ofs len in
+      let isub_ofs := interval_of_zone sub_ofs in
       ByteSet.mem bytes isub_ofs &
-      (forall tt ws wi, check_align mps ws = ok tt -> is_align wi ws ->
-        (ofs <> None -> wrepr _ (odflt 0%Z ofs) = wi) -> is_align (mps_addr mps' + wi) ws)].
+      (forall tt ws wi, check_align sr ws = ok tt -> is_align wi ws ->
+        (ofs <> None -> wrepr _ (odflt 0%Z ofs) = wi) -> is_align (sub_region_addr sr' + wi) ws)].
   Proof.
     rewrite /get_var_kind /check_gvalid.
     case : (@idP (is_glob x)) => hg.
-    + t_xrbindP => hofs hlen z_align /get_globalP hget <- [hmps] /=.
+    + t_xrbindP => hofs hlen z_align /get_globalP hget <- [hsr] /=.
       rewrite hget /=.
-      set mps' := mps_glob _ _.
-      set i := interval_of_sub _.
-      exists mps', (ByteSet.full i); split=> //.
+      set sr' := sub_region_glob _ _.
+      set i := interval_of_zone _.
+      exists sr', (ByteSet.full i); split=> //.
       + apply /ByteSet.memP => j hmem.
         rewrite ByteSet.fullE.
-        case: ofs hofs hmem {hmps} => [ofs|].
+        case: ofs hofs hmem {hsr} => [ofs|].
         + by move=> /(_ _ refl_equal) ?; rewrite /I.memi /= !zify; lia.
         by move=> _; rewrite /I.memi /= !zify.
-      have hwf: wf_mps mps.
-      + subst mps; split.
-        + by apply: mp_glob_wf.
+      have hwf: wf_sub_region sr.
+      + subst sr; split.
+        + by apply: region_glob_wf.
         + by case: (ofs) => [?|] //=; apply size_slot_pos.
         by case: ofs hofs => [?|] //=; auto with zarith.
-      move=> _ ws wi /(check_alignP hwf) hal1 hal2; subst mps.
+      move=> _ ws wi /(check_alignP hwf) hal1 hal2; subst sr.
       case: ofs hofs hwf hal1 => [ofs|] /=.
       + move=> /(_ _ refl_equal) hofs hwf hal1 /(_ ltac:(discriminate)) ?; subst wi.
-        set addr := mps_addr _ in hal1.
-        have -> // : (mps_addr mps' + wrepr _ ofs = addr)%R.
-        by rewrite /mps' /addr /mps_addr /= wrepr0 GRing.addr0.
+        set addr := sub_region_addr _ in hal1.
+        have -> // : (sub_region_addr sr' + wrepr _ ofs = addr)%R.
+        by rewrite /sr' /addr /sub_region_addr /= wrepr0 GRing.addr0.
       by move=> *; apply is_align_add.
     move=> hofs hlen.
     case hlocal: get_local => [pk|//] [<-] /=; rewrite /check_valid.
-    t_xrbindP=> mps' hmps' ? /assertP hmem hmps; rewrite hmps' -hmps.
-    eexists mps', _; split; [eauto..|].
-    have hwf: wf_mps mps.
-    + case: (get_mps_wf hmps') => ? hwf'.
-      subst mps; split.
+    t_xrbindP=> sr' /get_sub_regionP hsr' ? /assertP hmem hsr; rewrite hsr' -hsr.
+    eexists sr', _; split; [eauto..|].
+    have hwf: wf_sub_region sr.
+    + case: (vs_wf_region hsr') => ? hwf'.
+      subst sr; split.
       + by apply hwf'.
       + by case: (ofs) => [?|] //=; apply hwf'.
       case: hwf' => *.
       case: ofs hofs {hmem} => [?|] //=.
       by move=> /(_ _ refl_equal); lia.
-    subst mps; move=> _ ws wi /(check_alignP hwf) hal1 hal2.
+    subst sr; move=> _ ws wi /(check_alignP hwf) hal1 hal2.
     case: ofs hofs hwf hal1 {hmem} => [ofs|] /=.
     + move=> /(_ _ refl_equal) hofs hwf hal1 /(_ ltac:(discriminate)) ?; subst wi.
-      set addr := mps_addr _ in hal1.
-      have -> // : (mps_addr mps' + wrepr _ ofs = addr)%R.
-      by rewrite /addr /mps_addr /= wrepr_add GRing.addrA.
+      set addr := sub_region_addr _ in hal1.
+      have -> // : (sub_region_addr sr' + wrepr _ ofs = addr)%R.
+      by rewrite /addr /sub_region_addr /= wrepr_add GRing.addrA.
     by move=> *; apply is_align_add.
   Qed.
 
   (* If [x] is a local variable *)
-  Lemma check_mk_addr_ptr (x:var_i) aa ws xi ei e1 i1 pk mps :
-    (* si e1 est évalué à un entier dans s' *)
+  Lemma check_mk_addr_ptr (x:var_i) aa ws xi ei e1 i1 pk sr :
     sem_pexpr [::] s' e1 >>= to_int = ok i1 ->
-    (* x est associé à pk par l'oracle *)
     get_local pmap x = Some pk ->
-    (* x est associé à mps dans la region_map *)
-    valid_pk s' mps pk ->
-    (* mps est aligné sur ws *)
-(*     is_align (mps_addr mps) ws -> *)
-    (* mk_addr_ptr renvoie xi et ei *)
+    valid_pk s' sr pk ->
     mk_addr_ptr pmap x aa ws pk e1 = ok (xi, ei) ->
     ∃ (wx wi : u64),
       [/\ Let x := get_var (evm s') xi in to_pointer x = ok wx,
           Let x := sem_pexpr [::] s' ei in to_pointer x = ok wi
-        & (mps_addr mps + wrepr U64 (i1 * mk_scale aa ws))%R = (wx + wi)%R
-(*           & is_align (mps_addr mps) ws]. *)].
+        & (sub_region_addr sr + wrepr U64 (i1 * mk_scale aa ws))%R = (wx + wi)%R].
   Proof.
     move=> he1 hloc hpk.
-    rewrite /mk_addr_ptr. (*assert (h := wfr_ptr hgetr).
-    case: h => [pk' []]; rewrite hloc => -[?]; subst pk'. *)
+    rewrite /mk_addr_ptr.
     case: pk hloc hpk => //.
-    + move=> sl xofs xws sub sc hlocal /= ? [<- <-]; subst mps.
-      exists (wbase_ptr sc), (wrepr U64 (xofs + smp_ofs sub) + wrepr U64 (i1 * mk_scale aa ws))%R.
-      rewrite (mk_ofsP aa ws (xofs + smp_ofs sub) he1) /mps_addr /= base_ptrP /= !truncate_word_u.
+    + move=> sl xofs xws z sc hlocal /= ? [<- <-]; subst sr.
+      exists (wbase_ptr sc), (wrepr U64 (xofs + z.(z_ofs)) + wrepr U64 (i1 * mk_scale aa ws))%R.
+      rewrite (mk_ofsP aa ws (xofs + z.(z_ofs)) he1) /sub_region_addr /= base_ptrP /= !truncate_word_u.
       split => //.
       + by f_equal; rewrite !(wrepr_add, wrepr_mul); ssrring.ssring.
       (* TODO : enhance *)
       rewrite (wfd_offset (wf_locals hlocal)).
       by rewrite wrepr_add; ssrring.ssring.
     move=> p hlocal /= hword [<- <-].
-    exists (mps_addr mps), (wrepr U64 (i1 * mk_scale aa ws)).
+    exists (sub_region_addr sr), (wrepr U64 (i1 * mk_scale aa ws)).
     rewrite (mk_ofsP aa ws 0 he1) /= hword /= !truncate_word_u; split => //.
     by do 2 f_equal; ssrring.ssring.
   Qed.
@@ -636,40 +630,39 @@ Section EXPR.
     check_vpk_word rmap (gv x) vpk ofs ws = ok t ->
     (ofs <> None -> ofs = Some (i1 * mk_scale aa ws)) ->
     mk_addr pmap (gv x) aa ws vpk e1 = ok (xi, ei) ->
-    exists mps bytes wx wi,
-    [/\ check_gvalid rmap x = Some (mps, bytes),
-        let sub_ofs  := sub_ofs mps.(mps_sub) ofs (wsize_size ws) in
-        let isub_ofs := interval_of_sub sub_ofs in
+    exists sr bytes wx wi,
+    [/\ check_gvalid rmap x = Some (sr, bytes),
+        let sub_ofs  := sub_zone_at_ofs sr.(sr_zone) ofs (wsize_size ws) in
+        let isub_ofs := interval_of_zone sub_ofs in
         ByteSet.mem bytes isub_ofs,
         get_var (evm s') xi >>= to_pointer = ok wx,
         sem_pexpr [::] s' ei >>= to_pointer = ok wi &
-        (mps_addr mps + wrepr Uptr (i1 * mk_scale aa ws)%Z = wx + wi)%R /\
+        (sub_region_addr sr + wrepr Uptr (i1 * mk_scale aa ws)%Z = wx + wi)%R /\
         is_align (wx + wi) ws].
   Proof.
     move=> he1 hi1 hal1; rewrite /get_var_kind /check_vpk_word /mk_addr /with_var.
-    t_xrbindP => hget mps' hvpk halign hofs haddr.
+    t_xrbindP => hget sr' hvpk halign hofs haddr.
     have hofs' : ∀ zofs : Z, ofs = Some zofs → 0 <= zofs ∧ zofs + wsize_size ws <= size_slot (gv x).
     + case: (ofs) hofs => [ofs'|//].
       move=> /(_ ltac:(discriminate)) [->] _ [<-].
       by have := WArray.mk_scale_bound aa ws; nia.
-    have [mps [bytes [hgvalid hmem hal]]] := check_vpkP hofs' (wsize_size_pos _) hget hvpk.
-    exists mps, bytes.
+    have [sr [bytes [hgvalid hmem hal]]] := check_vpkP hofs' (wsize_size_pos _) hget hvpk.
+    exists sr, bytes.
     rewrite hgvalid; move: hgvalid; rewrite /check_gvalid.
     case: (@idP (is_glob x)) hget haddr => hglob.
     + t_xrbindP=> -[xofs xws] /get_globalP hget <- [<- <-] /=.
-      rewrite hget => -[??]; subst mps bytes.
+      rewrite hget => -[??]; subst sr bytes.
       exists rip, (wrepr U64 xofs + wrepr U64 (i1 * mk_scale aa ws))%R.
       rewrite vs_rip (mk_ofsP aa ws xofs he1) /= !truncate_word_u wrepr_add GRing.addrC.
       split=> //=.
-      have heq : mps_addr (mps_glob x.(gv) (xofs, xws)) = (rip + wrepr _ xofs)%R.
-      + by rewrite /mps_addr /mps_glob /= (wfg_offset (wf_globals hget)) wrepr0 GRing.addr0.
+      have heq : sub_region_addr (sub_region_glob x.(gv) (xofs, xws)) = (rip + wrepr _ xofs)%R.
+      + by rewrite /sub_region_addr /sub_region_glob /= (wfg_offset (wf_globals hget)) wrepr0 GRing.addr0.
       split; first by rewrite heq GRing.addrA.
       rewrite GRing.addrA -heq; apply: (hal _ _ _ halign); first by apply arr_is_align.
       by case: (ofs) hofs=> // ? h /h [->].
     case heq: get_local => [pk|//] [<-] /check_mk_addr_ptr -/(_ _ _ he1 heq) haddr.
-    case hmps: get_mps => [mps1|//] [??]; subst mps1 bytes.
-    move /get_mpsP in hmps.
-    have [pk' []] := wfr_ptr hmps; rewrite heq => -[<-] /haddr [wx [wi [-> -> heq1]]].
+    case hsr: Mvar.get => [sr1|//] [??]; subst sr1 bytes.
+    have [pk' []] := wfr_ptr hsr; rewrite heq => -[<-] /haddr [wx [wi [-> -> heq1]]].
     exists wx, wi; split=> //; rewrite -heq1; split=> //.
     apply: (hal _ _ _ halign); first by apply arr_is_align.
     by case: (ofs) hofs=> // ? h /h [->].
@@ -788,7 +781,7 @@ Section EXPR.
       + by rewrite /size_slot hty /=; lia.
       have h2: WArray.is_align (0 * mk_scale AAdirect ws) ws by [].
       have h3: Some 0 ≠ None → Some 0 = Some (0 * mk_scale AAdirect ws) by [].
-      have [mps [wx [wi [-> -> /= <- hal]]]] := check_mk_addr h0 h1 h2 hgvk hcheck h3 haddr.
+      have [sr [wx [wi [-> -> /= <- hal]]]] := check_mk_addr h0 h1 h2 hgvk hcheck h3 haddr.
       
       by move=> /(wfr_val hgval); rewrite hty wrepr0 GRing.addr0 => -[ w [-> ->]].
       have := check_mk_addr.
