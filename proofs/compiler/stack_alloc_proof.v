@@ -819,25 +819,12 @@ Section EXPR.
       move=> /hrec -> hto wr hr ?; subst v.
       have := get_var_kindP hc hget; rewrite /get_gvar /= => -> /=.
       rewrite hto' hto /=.
+      admit. (*
       have: read_mem (emem s) (wv1+we1) sz1 = read_mem (emem s') (wv1+we1) sz1.
       + apply vs_unchanged.
         + apply: read_mem_valid_pointer hr.
         + admit.
-        
-        intros contra.
-        valid_state
-        Search m0.
-        disjoint_source
-      disjoint_writable_is_constant
-      valid_incl
-      Search _ valid_pointer.
-      Search disjoint_zrange.
-      vs_valid_incl
-      valid_state
-  forall w sz, valid_pointer s.(emem) w sz
-  
-      
-       -(vs_eq_mem (read_mem_valid_pointer hr)) hr. *)
+       (* -(vs_eq_mem (read_mem_valid_pointer hr)) hr. *) *)
     + move=> o1 e1 IH e2 v.
       by t_xrbindP => e1' /IH hrec <- ve1 /hrec /= ->.
     + move=> o1 e1 H1 e1' H1' e2 v.
@@ -848,7 +835,7 @@ Section EXPR.
     move=> t e He e1 H1 e1' H1' e2 v.
     t_xrbindP => e_ /He he e1_ /H1 hrec e1'_ /H1' hrec' <-.
     by move=> b vb /he /= -> /= -> ?? /hrec -> /= -> ?? /hrec' -> /= -> /= ->.
-  Qed.
+  Admitted.
 
   Definition alloc_eP := check_e_esP.1.
   Definition alloc_esP := check_e_esP.2.
@@ -895,17 +882,15 @@ Proof.
   by move: v; rewrite heq => v; rewrite !get_gvar_eq.
 Qed.
 
-Lemma get_localn_checkg_diff rmap mp s2 x y : 
+Lemma get_localn_checkg_diff rmap sr_bytes s2 x y : 
   get_local pmap x = None ->
   wfr_PTR rmap s2 ->
-  check_gvalid rmap y = Some mp ->
+  check_gvalid rmap y = Some sr_bytes ->
   (~is_glob y -> x <> (gv y)).
 Proof.
-  rewrite /check_gvalid /wfr_PTR; case:ifPn => // hg hl hwf.
-  case heq: check_valid => [mp' | // ].
-  move=> [?] _; subst mp'.
-  have /check_validP [ /hwf [mpy [hy _]] _] := heq.
-  by move=> hx; subst x; move: hy; rewrite hl.
+  rewrite /check_gvalid; case:is_glob => // hl hwf.
+  case heq: Mvar.get => [sr' | // ] _ _.
+  by have /hwf [pk [hy _]] := heq; congruence.
 Qed.
 
 Lemma valid_state_set_var rmap m0 s1 s2 x v:
@@ -914,18 +899,18 @@ Lemma valid_state_set_var rmap m0 s1 s2 x v:
   ¬ Sv.In x (vnew pmap) ->
   valid_state rmap m0 (with_vm s1 (evm s1).[x <- v]) (with_vm s2 (evm s2).[x <- v]).
 Proof.
-  case: s1 s2 => mem1 vm1 [mem2 vm2] [/=] hvptr hdisj hrip hrsp hf heqvm hwfr heqg hnotm hget hnin.
+  case: s1 s2 => mem1 vm1 [mem2 vm2] [/=] hvalid hdisj hincl hunch hrip hrsp hwfr heqvm hwfr2 hget hnin.
   constructor => //=.
   + by rewrite get_var_neq //; assert (h:=rip_in_new); SvD.fsetdec.
   + by rewrite get_var_neq //; assert (h:=rsp_in_new); SvD.fsetdec.
   + by move=> y hy; apply get_var_set_eq; apply heqvm.
-  rewrite /with_vm /=; case: hwfr => /= hgmp hval hptr.
+  rewrite /with_vm /=; case: hwfr2 => hval hptr.
   constructor => //=.
-  + move=> y mp vy hy; have ? := get_localn_checkg_diff hget hptr hy.
+  + move=> y sr bytes vy hy; have ? := get_localn_checkg_diff hget hptr hy.
     by rewrite get_gvar_neq //; apply hval.
   move=> y mp hy; have [pk [hgety hpk]]:= hptr y mp hy; exists pk; split => //.
-  case: pk hgety hpk => //= yp hyp.  
-  assert (h := disj_ptr hyp); case: h => _ _ hin _ <-.
+  case: pk hgety hpk => //= yp hyp.
+  assert (h := wfr_distinct (wf_locals hyp) hyp). case: h => _ _ hin _ <-.
   by rewrite get_var_neq //; SvD.fsetdec.
 Qed.
 
