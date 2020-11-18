@@ -109,6 +109,7 @@ Module Type ByteSetType.
   Parameter addE : forall t n i, memi (add n t) i = I.memi n i || memi t i.
 
   Parameter removeE : forall e t i, memi (remove t e) i = memi t i && ~~I.memi e i.
+  Parameter remove_empty : forall e, remove empty e = empty.
 
   Parameter subsetP : forall t1 t2, reflect (forall i, memi t1 i -> memi t2 i) (subset t1 t2).
 
@@ -440,6 +441,12 @@ Proof.
   + by move=> /(_ erefl); rewrite Bool.eq_iff_eq_true; split => /idP hh; apply /idP;
        move: hh; rewrite /I.wf /I.is_empty /= !zify /=; lia. 
   by move=> _; symmetry; apply/idP; rewrite !zify; lia.
+Qed.
+
+Lemma remove_empty e : remove empty e = empty.
+Proof.
+  rewrite /remove; case (@idP (I.wf e)) => //= i.
+  by rewrite /empty /=; f_equal; apply (Eqdep_dec.UIP_dec Bool.bool_dec).
 Qed.
 
 (* ----------------------------------------- *)
