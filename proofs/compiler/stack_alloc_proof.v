@@ -47,10 +47,10 @@ Import Region.
 Section Section.
 
 Variables (pmap:pos_map) (stk_size glob_size:Z).
-Variables (rsp rip: pointer).
+Variables (rsp rip: ptr).
 
 Variable (Slots : Sv.t).
-Variable (Addr : slot -> pointer).
+Variable (Addr : slot -> ptr).
 Variable (Writable : slot -> bool).
 Variable (Align : slot -> wsize).
 
@@ -149,8 +149,8 @@ Record wf_direct (x : var) (s : slot) ofs ws z sc := {
   wfd_offset : Addr s = (wbase_ptr sc + wrepr Uptr ofs)%R
 }.
 
-(* TODO : move elsewhere (and turn pointer into ptr ?) *)
-Notation sptr := (sword Uptr).
+(* TODO : move elsewhere *)
+Notation sptr := (sword Uptr) (only parsing).
 
 Record wf_regptr x xr := {
   wfr_type : is_sarr (vtype x);

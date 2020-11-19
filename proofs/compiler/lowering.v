@@ -240,9 +240,9 @@ Definition sub_inc_dec_classify sz (e: pexpr) :=
 
 (* disp + base + scale * offset *)
 Record lea := MkLea {
-  lea_disp   : pointer;
+  lea_disp   : ptr;
   lea_base   : option var_i;
-  lea_scale  : pointer;
+  lea_scale  : ptr;
   lea_offset : option var_i;
 }.
 

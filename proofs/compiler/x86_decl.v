@@ -50,8 +50,8 @@ Definition label := positive.
 Definition remote_label := (funname * label)%type.
 
 (* Indirect jumps use labels encoded as pointers: we assume such an encoding exists. *)
-Parameter encode_label : remote_label → option pointer.
-Parameter decode_label : pointer → option remote_label.
+Parameter encode_label : remote_label → option ptr.
+Parameter decode_label : ptr → option remote_label.
 Axiom decode_encode_label : ∀ lbl, obind decode_label (encode_label lbl) = Some lbl.
 
 (* -------------------------------------------------------------------- *)
@@ -75,7 +75,7 @@ Variant rflag : Type := CF | PF | ZF | SF | OF | DF.
 Variant scale : Type := Scale1 | Scale2 | Scale4 | Scale8.
 
 (* -------------------------------------------------------------------- *)
-Coercion word_of_scale (s : scale) : pointer :=
+Coercion word_of_scale (s : scale) : ptr :=
   wrepr Uptr match s with
   | Scale1 => 1
   | Scale2 => 2
@@ -86,17 +86,17 @@ Coercion word_of_scale (s : scale) : pointer :=
 (* -------------------------------------------------------------------- *)
 (* disp + base + scale × offset *)
 Record reg_address : Type := mkAddress {
-  ad_disp   : pointer;
+  ad_disp   : ptr;
   ad_base   : option register;
   ad_scale  : scale;
   ad_offset : option register;
 }.
 
-Definition rip_address := pointer.
+Definition rip_address := ptr.
 
 Inductive address := 
   | Areg of reg_address
-  | Arip of pointer. 
+  | Arip of ptr. 
 
 (* -------------------------------------------------------------------- *)
 Variant condt : Type :=

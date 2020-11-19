@@ -286,12 +286,12 @@ End CoreMem.
  * -------------------------------------------------------------------- *)
 
 Notation Uptr := U64 (only parsing).
-Notation pointer := (word Uptr) (only parsing).
+Notation ptr := (word Uptr) (only parsing).
 
-Definition no_overflow (p: pointer) (sz: Z) : bool :=
+Definition no_overflow (p: ptr) (sz: Z) : bool :=
   (wunsigned p + sz <=? wbase Uptr)%Z.
 
-Definition disjoint_zrange (p: pointer) (s: Z) (p': pointer) (s': Z) :=
+Definition disjoint_zrange (p: ptr) (s: Z) (p': ptr) (s': Z) :=
   [/\ no_overflow p s,
       no_overflow p' s' &
       wunsigned p + s <= wunsigned p' \/
@@ -300,7 +300,7 @@ Definition disjoint_zrange (p: pointer) (s: Z) (p': pointer) (s': Z) :=
 Definition disjoint_range p s p' s' :=
   disjoint_zrange p (wsize_size s) p' (wsize_size s').
 
-Definition between (pstk : pointer)  (sz : Z) (p : pointer) (s : wsize) : bool :=
+Definition between (pstk : ptr)  (sz : Z) (p : ptr) (s : wsize) : bool :=
   ((wunsigned pstk <=? wunsigned p) && (wunsigned p + wsize_size s <=? wunsigned pstk + sz))%Z.
 
 Lemma between_leb pstk sz p s pstk' sz' :
@@ -327,7 +327,7 @@ Qed.
 
 Class alignment : Type :=
   Alignment {
-      is_align : pointer -> wsize -> bool
+      is_align : ptr -> wsize -> bool
     ; is_align_add ptr1 ptr2 sz : is_align ptr1 sz -> is_align ptr2 sz -> is_align (ptr1 + ptr2) sz
     ; is_align_mod ptr sz : (wunsigned ptr mod wsize_size sz = 0)%Z -> is_align ptr sz
     ; is_align_no_overflow ptr sz : is_align ptr sz → no_overflow ptr (wsize_size sz)
@@ -381,22 +381,22 @@ Qed.
 
 Class memory (mem: Type) : Type :=
   Memory {
-      read_mem  : mem -> pointer -> forall (s:wsize), exec (word s)
-    ; write_mem : mem -> pointer -> forall (s:wsize), word s -> exec mem
-    ; valid_pointer : mem -> pointer -> wsize -> bool
-    ; stack_root : mem -> pointer
-    ; stack_limit : mem -> pointer
-    ; frames : mem -> seq (pointer * Z)
+      read_mem  : mem -> ptr -> forall (s:wsize), exec (word s)
+    ; write_mem : mem -> ptr -> forall (s:wsize), word s -> exec mem
+    ; valid_pointer : mem -> ptr -> wsize -> bool
+    ; stack_root : mem -> ptr
+    ; stack_limit : mem -> ptr
+    ; frames : mem -> seq (ptr * Z)
     ; alloc_stack : mem -> wsize -> Z -> Z -> exec mem (* alignement, size, extra-size *)
     ; free_stack : mem -> Z -> mem
-    ; init : seq (pointer * Z) → pointer → exec mem
+    ; init : seq (ptr * Z) → ptr → exec mem
     }.
 
 Arguments read_mem : simpl never.
 Arguments write_mem {_ _} _ _ _ _ : simpl never.
 Arguments valid_pointer : simpl never.
 
-Definition top_stack {mem: Type} {M: memory mem} (m: mem) : pointer :=
+Definition top_stack {mem: Type} {M: memory mem} (m: mem) : ptr :=
   (head (stack_root m, 0) (frames m)).1.
 
 Definition allocatable_stack {mem: Type} {M : memory mem} (m : mem) (z : Z) :=
@@ -464,7 +464,7 @@ Arguments free_stack_spec {_ _} _ _ _.
 Arguments allocatable_spec {_ _ _ } _ _ _.
 
 (** Pointer arithmetic *)
-Instance Pointer : pointer_op pointer.
+Instance Pointer : pointer_op ptr.
 Proof.
 refine
   {| add p k := (p + wrepr Uptr k)%R

@@ -99,7 +99,8 @@ Module Type ByteSetType.
   Parameter inter  : t -> t -> t.
   Parameter union  : t -> t -> t.
 
-  Parameter is_emptyP : forall t, reflect (t = empty) (is_empty t).
+  Parameter is_emptyP : forall t, reflect (forall i, ~~ memi t i) (is_empty t).
+  Parameter is_empty_ext : forall t, is_empty t -> t = empty.
   Parameter emptyE : forall i, memi empty i = false.
 
   Parameter fullE : forall n i, memi (full n) i = I.memi n i.
@@ -109,7 +110,6 @@ Module Type ByteSetType.
   Parameter addE : forall t n i, memi (add n t) i = I.memi n i || memi t i.
 
   Parameter removeE : forall e t i, memi (remove t e) i = memi t i && ~~I.memi e i.
-  Parameter remove_empty : forall e, remove empty e = empty.
 
   Parameter subsetP : forall t1 t2, reflect (forall i, memi t1 i -> memi t2 i) (subset t1 t2).
 
@@ -206,12 +206,19 @@ Definition empty : t := @mkBytes [::] erefl.
 
 Definition is_empty (t: t) := if val t is [::] then true else false.
 
-Lemma is_emptyP t : reflect (t = empty) (is_empty t).
+Lemma is_emptyP t : reflect (forall i, ~~ memi t i) (is_empty t).
+Proof.
+  rewrite /is_empty.
+  case: t => -[|n t] /= wf; constructor => //.
+  move => /(_ n.(imin)); rewrite /memi /= I.memi_imin //.
+  by move /andP : wf => [].
+Qed.
+
+Lemma is_empty_ext t : is_empty t -> t = empty.
 Proof.
   rewrite /is_empty /empty.
-  case: t => - [ | n t] /= wf; constructor.
-  + by rewrite (Eqdep_dec.UIP_dec Bool.bool_dec wf erefl).
-  by move=> [].
+  case: t => -[|n t] /= wf // _.
+  by rewrite (Eqdep_dec.UIP_dec Bool.bool_dec wf erefl).
 Qed.
 
 Lemma emptyE i : memi empty i = false.
@@ -812,3 +819,11 @@ Proof.
   Qed.
 
 End ByteSet.
+
+Import ByteSet.
+
+Lemma remove_empty e : remove empty e = empty.
+Proof.
+  apply is_empty_ext; apply /is_emptyP => i.
+  by rewrite removeE emptyE.
+Qed.
