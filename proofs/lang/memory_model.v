@@ -300,8 +300,11 @@ Definition disjoint_zrange (p: ptr) (s: Z) (p': ptr) (s': Z) :=
 Definition disjoint_range p s p' s' :=
   disjoint_zrange p (wsize_size s) p' (wsize_size s').
 
+Definition zbetween (pstk : ptr) (sz : Z) (p : ptr) (sz' : Z) : bool :=
+  ((wunsigned pstk <=? wunsigned p) && (wunsigned p + sz' <=? wunsigned pstk + sz))%Z.
+
 Definition between (pstk : ptr)  (sz : Z) (p : ptr) (s : wsize) : bool :=
-  ((wunsigned pstk <=? wunsigned p) && (wunsigned p + wsize_size s <=? wunsigned pstk + sz))%Z.
+  zbetween pstk sz p (wsize_size s).
 
 Lemma between_leb pstk sz p s pstk' sz' :
   ((wunsigned pstk' <=? wunsigned pstk) && (wunsigned pstk + sz <=? wunsigned pstk' + sz'))%Z ->

@@ -736,7 +736,7 @@ Module MemoryI : MemoryT.
     case/andP: h => /andP[].
     set fr := {| frame_align := ws_stk |} => ok_f /lezP no_ovf top_al.
     rewrite set_allocP.
-    rewrite /between.
+    rewrite /between /zbetween.
     have b_pos := wunsigned_range m.(stk_root).
     have l_pos := wunsigned_range m.(stk_limit).
     have f_pos := footprint_of_stack_pos m.

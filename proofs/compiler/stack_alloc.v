@@ -533,6 +533,25 @@ Definition check_vpk rmap (x:var) vpk ofs len :=
     check_valid rmap x ofs len
   end.
 
+(* On pourrait réécrire check_vpk comme ceci (nom à changer, vu qu'il n'y a plus de vpk) *)
+(* Ou au pire définir cette fonction dans la partie preuve uniquement ?
+  Definition check_vpk' rmap (x : gvar) ofs len :=
+    let (sr, bytes) := check_gvalid rmap x in
+    let sr' := {| sr_region := sr.(sr_region);
+                  sr_zone   := sub_zone_at_ofs sr.(sr_zone) ofs len |}
+    in
+    let sub_ofs  := sub_zone_at_ofs sr.(sr_zone) ofs len in
+    let isub_ofs := interval_of_zone sub_ofs in
+    (* we check if [isub_ofs] is a subset of one of the intervals of [bytes] *)
+    (* ce test est inintéressant dans le cas glob, mais ça factorise
+       l'appel à sub_zone_at_ofs
+    *)
+    Let _   := assert (ByteSet.mem bytes isub_ofs)
+                      (Cerr_stk_alloc "check_valid: the region is partial") in
+    ok {| sr_region := sr.(sr_region); sr_zone := sub_ofs |}.
+(* Ça simplifierait l'énoncé et la preuve de check_vpkP. *)
+*)
+
 Definition check_vpk_word rmap x vpk ofs ws :=
   Let sr := check_vpk rmap x vpk ofs (wsize_size ws) in
   check_align sr ws.
