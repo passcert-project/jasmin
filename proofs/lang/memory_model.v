@@ -306,10 +306,10 @@ Definition zbetween (pstk : ptr) (sz : Z) (p : ptr) (sz' : Z) : bool :=
 Definition between (pstk : ptr)  (sz : Z) (p : ptr) (s : wsize) : bool :=
   zbetween pstk sz p (wsize_size s).
 
-Lemma between_leb pstk sz p s pstk' sz' :
-  ((wunsigned pstk' <=? wunsigned pstk) && (wunsigned pstk + sz <=? wunsigned pstk' + sz'))%Z ->
-  between pstk sz p s ->
-  between pstk' sz' p s.
+Lemma zbetween_trans p1 sz1 p2 sz2 p3 sz3 :
+  zbetween p1 sz1 p2 sz2 ->
+  zbetween p2 sz2 p3 sz3 ->
+  zbetween p1 sz1 p3 sz3.
 Proof.
 rewrite /between => /andP [] /ZleP a /ZleP b /andP [] /ZleP c /ZleP d.
 apply/andP; split; apply/ZleP; Psatz.lia.

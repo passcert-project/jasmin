@@ -271,6 +271,11 @@ Definition sub_zone_at_ofs z ofs len :=
   | Some ofs => {| z_ofs := z.(z_ofs) + ofs; z_len := len |}
   end.
 
+Definition sub_region_at_ofs sr ofs len :=
+  {| sr_region := sr.(sr_region);
+     sr_zone   := sub_zone_at_ofs sr.(sr_zone) ofs len
+  |}.
+
 Definition check_valid (rmap:region_map) (x:var) ofs len :=
   (* we get the bytes associated to variable [x] *)
   Let sr := get_sub_region rmap x in
@@ -307,7 +312,7 @@ Definition set_stack_ptr (rmap:region_map) x align ofs (x':var) :=
   {| var_region := rmap.(var_region);
      region_var := Mr.set rmap.(region_var) r bm |}.
 
-Definition check_stack_ptr rmap x align ofs x' :=
+Definition check_stack_ptr (rmap:region_map) x align ofs x' :=
   let r := {| r_slot := x; r_align := align; r_writable := true |} in
   let z := {| z_ofs := ofs; z_len := wsize_size Uptr |} in
   let i := interval_of_zone z in
@@ -515,21 +520,18 @@ Definition get_var_kind x :=
   else 
     ok (omap VKptr (get_local xv)).
 
-Definition region_glob x (ofs_align: Z * wsize) :=
-  {| r_slot := x; r_align := ofs_align.2; r_writable := false |}.
-
 (* TODO: factorize with [set_full] ? probably not worth *)
-Definition sub_region_glob x (ofs_align : Z * wsize) :=
+Definition sub_region_glob x ws :=
+  let r := {| r_slot := x; r_align := ws; r_writable := false |} in
   let z := {| z_ofs := 0; z_len := size_slot x |} in
-  {| sr_region := region_glob x ofs_align; sr_zone := z |}.
+  {| sr_region := r; sr_zone := z |}.
 
 Definition check_vpk rmap (x:var) vpk ofs len :=
   match vpk with
-  | VKglob z =>
-    let sr := sub_region_glob x z in
-    let z := sub_zone_at_ofs sr.(sr_zone) ofs len in
-    ok {| sr_region := sr.(sr_region); sr_zone := z |}
-  | VKptr pk => 
+  | VKglob (_, ws) =>
+    let sr := sub_region_glob x ws in
+    ok (sub_region_at_ofs sr ofs len)
+  | VKptr _pk => 
     check_valid rmap x ofs len
   end.
 
@@ -616,9 +618,12 @@ Fixpoint alloc_e (e:pexpr) :=
 
 End ALLOC_E.
 
-Definition sub_region_stack x align z :=
-  let r := {| r_slot := x; r_align := align; r_writable := true |} in
+Definition sub_region_direct x align sc z :=
+  let r := {| r_slot := x; r_align := align; r_writable := sc != Sglob |} in
   {| sr_region := r; sr_zone := z |}.
+
+Definition sub_region_stack x align z :=
+  sub_region_direct x align Slocal z.
 
 Definition sub_region_pk pk :=
   match pk with
