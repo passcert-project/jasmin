@@ -315,13 +315,13 @@ rewrite /between => /andP [] /ZleP a /ZleP b /andP [] /ZleP c /ZleP d.
 apply/andP; split; apply/ZleP; Psatz.lia.
 Qed.
 
-Lemma between_byte pstk sz b i ws :
-  no_overflow b (wsize_size ws) →
-  between pstk sz b ws →
-  0 <= i ∧ i < wsize_size ws →
+Lemma between_byte pstk sz b i sz' :
+  no_overflow b sz' →
+  zbetween pstk sz b sz' →
+  0 <= i ∧ i < sz' →
   between pstk sz (b + wrepr U64 i) U8.
 Proof.
-  rewrite /between !zify; change (wsize_size U8) with 1 => novf [] lo hi i_range.
+  rewrite /zbetween !zify; change (wsize_size U8) with 1 => novf [] lo hi i_range.
   rewrite wunsigned_add; first Psatz.lia.
   move: (wunsigned_range b); Psatz.lia.
 Qed.
