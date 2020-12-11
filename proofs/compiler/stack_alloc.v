@@ -321,10 +321,12 @@ Definition sub_region_stkptr s ws z :=
   {| sr_region := r; sr_zone := z |}.
 
 (* TODO: fusion with check_valid ? *)
+(* TODO : use sub_region_stkptr and (?) sub_zone_at_ofs ? *)
 Definition check_stack_ptr (rmap:region_map) s ws z x' :=
-  let sr := sub_region_stkptr s ws z in
+  let r := {| r_slot := s; r_align := ws; r_writable := true |} in
+  let z := {| z_ofs := z.(z_ofs); z_len := wsize_size Uptr |} in
   let i := interval_of_zone z in
-  let bytes := get_var_bytes rmap sr.(sr_region) x' in
+  let bytes := get_var_bytes rmap r x' in
   Let _   := assert (ByteSet.mem bytes i)
                     (Cerr_stk_alloc "check_stack_ptr: the region is partial") in
   ok tt.
@@ -891,7 +893,7 @@ Definition alloc_call_arg rmap (sao_param: option param_info) (e:pexpr) :=
     ok (None, Pvar x)
   | None, Some _ => cerror "argument not a reg" 
   | Some pi, Some (Pregptr p) => 
-    Let sr := Region.check_valid rmap xv (Some 0%Z) (size_slot xv)in
+    Let sr := Region.check_valid rmap xv (Some 0%Z) (size_slot xv) in
     Let _  := if pi.(pp_writable) then writable sr.(sr_region) else ok tt in
     Let _  := check_align sr pi.(pp_align) in
     ok (Some (pi.(pp_writable),sr), Pvar (mk_lvar (with_var xv p)))
@@ -1126,7 +1128,7 @@ Definition check_result pmap rmap params oi (x:var_i) :=
   | Some i =>
     match nth None params i with
     | Some r => 
-      Let sr := check_valid rmap x (Some 0%Z) (size_slot x)in
+      Let sr := check_valid rmap x (Some 0%Z) (size_slot x) in
       Let _  := assert (r == sr.(sr_region)) (Cerr_stk_alloc "invalid reg ptr in result") in
       Let p  := get_regptr pmap x in
       ok p
