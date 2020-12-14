@@ -351,7 +351,7 @@ Class wf_rmap (rmap:region_map) (s1:estate) (s2:estate) := {
 }.
 
 Definition eq_mem_source (m1 m2:mem) := 
-  forall w sz, valid_pointer m1 w sz -> read_mem m2 w sz = read_mem m1 w sz.
+  forall w sz, valid_pointer m1 w sz -> read_mem m1 w sz = read_mem m2 w sz.
 (*
 Definition eq_not_mod (m0 m2:mem) := 
   forall ofs, 
@@ -997,7 +997,7 @@ Section EXPR.
       t_xrbindP => ? /check_varP hc e1' /IH hrec <- wv1 vv1 /= hget hto' we1 ve1.
       move=> /hrec -> hto wr hr ?; subst v.
       have := get_var_kindP hc hget; rewrite /get_gvar /= => -> /=.
-      by rewrite hto' hto /= (vs_eq_mem (read_mem_valid_pointer hr)) hr.
+      by rewrite hto' hto /= -(vs_eq_mem (read_mem_valid_pointer hr)) hr.
     + move=> o1 e1 IH e2 v.
       by t_xrbindP => e1' /IH hrec <- ve1 /hrec /= ->.
     + move=> o1 e1 H1 e1' H1' e2 v.
@@ -1679,8 +1679,8 @@ Lemma eq_mem_source_set_sub_region rmap m0 s1 s2 x sr p ws w mem2:
   eq_mem_source (emem s1) mem2.
 Proof.
   move=> hvs hwf hb hw p' ws' hvp.
-  rewrite -(vs_eq_mem hvp).
-  apply (Memory.writeP_neq hw).
+  rewrite (vs_eq_mem hvp).
+  symmetry; apply (Memory.writeP_neq hw).
   apply (disjoint_zrange_incl_l hb).
   apply (disjoint_zrange_incl_l (zbetween_sub_region_addr hwf)).
   apply (vs_disjoint hwf.(wfr_slot) hvp).
@@ -1796,6 +1796,29 @@ Proof.
   (* different regions : disjoint -> one must probably be writable *)
 Abort.
 
+Lemma disjoint_range_valid_not_valid_U8 m p1 ws1 p2 :
+  valid_pointer m p1 ws1 ->
+  ~ valid_pointer m p2 U8 ->
+  disjoint_range p1 ws1 p2 U8.
+Proof.
+  move=> /Memory.valid_pointerP [hal1 hval1] hnval.
+  split.
+  + by apply is_align_no_overflow.
+  + by apply is_align_no_overflow; apply is_align8.
+  rewrite wsize8.
+  case: (Z_le_gt_dec (wunsigned p1 + wsize_size ws1) (wunsigned p2)); first by left.
+  case: (Z_le_gt_dec (wunsigned p2 + 1) (wunsigned p1)); first by right.
+  move=> hgt1 hgt2.
+  case: hnval.
+  apply /Memory.valid_pointerP; split.
+  + by apply is_align8.
+  move=> k; rewrite wsize8 => hk; have ->: k = 0 by lia.
+  rewrite wrepr0 GRing.addr0.
+  have ->: p2 = (p1 + wrepr _ (wunsigned p2 - wunsigned p1))%R.
+  + by rewrite wrepr_sub !wrepr_unsigned; ssrring.ssring. (* proof from memory_model *)
+  by apply hval1; lia.
+Qed.
+
 (* TODO : disjoint_intervals (interval_of_zone _ ) = disjoint_zones z1 z2
           et disjoint_zones -> disjoint_zrange avec même base *)
 Lemma alloc_lvalP rmap r1 r2 v ty m0 (s1 s2: estate) :
@@ -1865,47 +1888,49 @@ Proof.
     by apply (eq_mem_source_set_sub_region hvs hwf (zbetween_refl _ _) hmem2).
 
   (* Lmem *)
-  + move=> ws x e1; t_xrbindP => ? /check_varP hx e1' /(alloc_eP hvs) he1 <-.
+  + move=> ws x e1; t_xrbindP => _ /check_varP hx e1' /(alloc_eP hvs) he1 <-.
     move=> s1' xp ? hgx hxp w1 v1 /he1 he1' hv1 w hvw mem2 hw <- /=.
     have := get_var_kindP hvs hx; rewrite /get_gvar /= => /(_ _ hgx) -> /=.
     rewrite he1' hxp /= hv1 /= hvw /=.
     have hvp1 := write_mem_valid_pointer hw.
     have hvp2: valid_pointer (emem s2) (xp + w1) ws.
     + by apply /Memory.readV; assert (h := vs_eq_mem hvp1); rewrite -h; apply /Memory.readV.
-    have /Memory.writeV  -/(_ w) [mem2' hmem2] := hvp2.
+    have /Memory.writeV -/(_ w) [mem2' hmem2] := hvp2.
     rewrite hmem2 /=; eexists;split;first reflexivity.
     (* valid_state update mem *)
-    case:(hvs) => vptr hdisj hrip hrsp hf heqvm hwfr heqg hnotm. 
-    have ha1 := Memory.valid_align hvp1.
+    case:(hvs) => hvalid hdisj hincl hunch hrip hrsp hwfr heqvm hwfr2 heqmem.
+    have ha1 := valid_align hvp1.
     have hno1 := is_align_no_overflow ha1.
     constructor => //=.
-    + by move=> ???; rewrite (Memory.write_valid _ _ hmem2); apply vptr.
-    + by move=> ??; rewrite (Memory.write_valid _ _ hw); apply hdisj.
-    + by rewrite -(ss_frames (Memory.write_mem_stable hmem2)).
-    + case: (hwfr) => h1 h2 h3; constructor => //=.
-      + move=> y mpy vy hcv hgy.
-        have hmp := check_gvalid_mp hvs hcv.
-        apply: (disjoint_eq_mp_val hmp _ hmem2 (h2 _ _ _ hcv hgy)).
-        have hb1 := valid_mp_addr_bound hmp; have hb2 := @ms_bound (mp_s mpy).
-        split => //.
-        + by rewrite /no_overflow !zify; lia.
-        by have:= hdisj _ _ (mp_s mpy) hvp1; lia.
-      move=> y mpy hgy.
-      have [pk [hgpk hvpk]] := h3 _ _ hgy; exists pk; split => //.
-      case: pk hgpk hvpk => //= ofs /get_local_pos_sptr hgpk <-.
+    + by move=> ??; rewrite (Memory.write_valid _ _ hmem2); apply hvalid.
+    + by move=> ???; rewrite (Memory.write_valid _ _ hw); apply hdisj.
+    + by move=> ??; rewrite (Memory.write_valid _ _ hw) (Memory.write_valid _ _ hmem2); apply hincl.
+    + (* ça m'a l'air improvable *)
+      move=> p ws' hvalid2 hvalid3 hdisj2.
+      rewrite (Memory.write_valid _ _ hw) in hvalid3.
+      rewrite (hunch _ _ hvalid2 hvalid3 hdisj2).
+      symmetry; apply (Memory.writeP_neq hmem2).
+      [p --- p + wsize_size ws']
+          [(xp + w1) -- wsize_size ws]
+      
+    + case: (hwfr2) => hval hptr; split.
+      + move=> y sry bytes vy hcv hgy.
+        have hwfy := check_gvalid_wf hvs hcv.
+        apply: (disjoint_zrange_eq_sub_region_val hwfy _ hmem2 (hval _ _ _ _ hcv hgy)).
+        apply disjoint_zrange_sym.
+        apply (disjoint_zrange_incl_l (zbetween_sub_region_addr hwfy)).
+        by apply (hdisj _ _ _ hwfy.(wfr_slot)).
+      move=> y sry hgy.
+      have [pk [hgpk hvpk]] := hptr _ _ hgy; exists pk; split => //.
+      case: pk hgpk hvpk => //= s ofs ws' z f hgpk hread /hread <-.
       apply: (Memory.writeP_neq hmem2).
-      have h := sptr_addr_bound hgpk; split => //.
-      + rewrite /no_overflow !zify; lia.
-      by have:= hdisj _ _ MSstack hvp1; rewrite /wptr /wptr_size /=; lia.
-    + move=> w2 sz; rewrite (Memory.write_valid _ _ hw) => hv.
-      by apply: Memory.read_write_any_mem (hw) (hmem2) => //; apply heqg.
-    move=> ofs hofs hl; rewrite hnotm //.
-    symmetry; apply: (Memory.writeP_neq hmem2).
-    split => //.
-    + by rewrite /no_overflow zify wsize8; have := wunsigned_range (rsp + wrepr U64 ofs); lia.
-    rewrite wsize8 wunsigned_add; last by have := @ge0_wunsigned _ rsp; lia.
-    by have:= hdisj _ _ MSstack hvp1; rewrite /wptr /wptr_size /=; lia.
-  
+      assert (hwf' := sub_region_stkptr_wf (wf_locals hgpk)).
+      apply disjoint_zrange_sym.
+      apply: (disjoint_zrange_incl_l (zbetween_sub_region_addr hwf')).
+      by apply (hdisj _ _ _ hwf'.(wfr_slot)).
+    + move=> p ws'; rewrite (Memory.write_valid _ _ hw) => hv.
+      by apply: Memory.read_write_any_mem hw hmem2 => //; apply heqmem.
+
   (* Laset *)
   move=> aa ws x e1; t_xrbindP => e1' /(alloc_eP hvs) he1.
   move=> hr2 s1'; apply on_arr_varP => n t hty hxt.
