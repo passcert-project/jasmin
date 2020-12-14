@@ -112,9 +112,9 @@ Definition valid_incl m0 m :=
 
 (* The memory zones that are not in a writable slot remain unchanged. *)
 Definition disjoint_writable_is_constant ms m0 m :=
-  forall p ws, valid_pointer m0 p ws -> ~ valid_pointer ms p ws ->
-  (forall s, Sv.In s Slots -> Writable s -> disjoint_zrange (Addr s) (size_slot s) p (wsize_size ws)) ->
-  read_mem m0 p ws = read_mem m p ws.
+  forall p, valid_pointer m0 p U8 -> ~ valid_pointer ms p U8 ->
+  (forall s, Sv.In s Slots -> Writable s -> disjoint_zrange (Addr s) (size_slot s) p (wsize_size U8)) ->
+  read_mem m0 p U8 = read_mem m p U8.
 
 (* The stack and the global space are disjoint (if both non-trivial) *)
 (* TODO: Is this really needed? *)
@@ -1868,8 +1868,8 @@ Proof.
     constructor => //=.
     + by move=> ??; rewrite (Memory.write_valid _ _ hmem2); apply hvalid.
     + by move=> ??; rewrite (Memory.write_valid _ _ hmem2); apply hincl.
-    + move=> p ws' hvalid2 hvalid3 hdisj2.
-      rewrite (hunch p ws' hvalid2 hvalid3 hdisj2).
+    + move=> p hvalid2 hvalid3 hdisj2.
+      rewrite (hunch p hvalid2 hvalid3 hdisj2).
       symmetry; apply (Memory.writeP_neq hmem2).
       have [_ hwritable] := set_word_align hvs hwf hsetw.
       have := hdisj2 _ hwf.(wfr_slot).
@@ -1906,13 +1906,10 @@ Proof.
     + by move=> ???; rewrite (Memory.write_valid _ _ hw); apply hdisj.
     + by move=> ??; rewrite (Memory.write_valid _ _ hw) (Memory.write_valid _ _ hmem2); apply hincl.
     + (* ça m'a l'air improvable *)
-      move=> p ws' hvalid2 hvalid3 hdisj2.
-      rewrite (Memory.write_valid _ _ hw) in hvalid3.
-      rewrite (hunch _ _ hvalid2 hvalid3 hdisj2).
+      move=> p hvalid2; rewrite (Memory.write_valid _ _ hw) => hvalid3 hdisj2.
+      rewrite (hunch p hvalid2 hvalid3 hdisj2).
       symmetry; apply (Memory.writeP_neq hmem2).
-      [p --- p + wsize_size ws']
-          [(xp + w1) -- wsize_size ws]
-      
+      by apply (disjoint_range_valid_not_valid_U8 hvp1 hvalid3).
     + case: (hwfr2) => hval hptr; split.
       + move=> y sry bytes vy hcv hgy.
         have hwfy := check_gvalid_wf hvs hcv.
