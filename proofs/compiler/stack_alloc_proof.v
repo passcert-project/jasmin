@@ -95,12 +95,12 @@ Definition valid_incl m0 m :=
                                               --------------------
 
    m0:
-   ------------- --------------- ------------ --------------------
-   |   stack   | | other stack | |   glob   | |    mem source    |
-   ------------- --------------- ------------ --------------------
+                 --------------- ------------ --------------------
+                 | other stack | |   glob   | |    mem source    |
+                 --------------- ------------ --------------------
 
                                   ||
-                                  || execution
+                                  || function call
                                   \/
 
    m:
@@ -630,6 +630,7 @@ Section EXPR.
   Proof. by rewrite /zbetween_zone !zify; lia. Qed.
 
   (* FIXME: why are we using CMP on Z ?? *)
+  (* TODO : put that lemma in zify ? *)
   Lemma Zcmp_le i1 i2 : (i1 <= i2)%CMP = (i1 <=? i2)%Z.
   Proof.
     rewrite /cmp_le /gcmp /Mz.K.cmp /Z.leb -Zcompare_antisym.
@@ -1617,12 +1618,6 @@ Proof.
   by have := wf_region_slot_inj hwf hwf2; auto.
 Qed.
 
-(* TODO : points à discuter
-   - comparaison Z avec %CMP
-   - sub_region_stkptr ?? -> z ou {z_ofs; wsize_size U64 }
-   - pk on fait les choses en double ?
-   - a-t-on besoin d'introduire p et ws ?
-*)
 Lemma wfr_PTR_set_sub_region rmap m0 s1 s2 x pk sr p ws w mem2 :
   valid_state rmap m0 s1 s2 ->
   get_local pmap x = Some pk ->
@@ -1829,7 +1824,7 @@ Lemma alloc_lvalP rmap r1 r2 v ty m0 (s1 s2: estate) :
   exists s2', write_lval [::] r2.2 v s2 = ok s2' /\ valid_state r2.1 m0 s1' s2'.
 Proof.
   move=> ha hvs ?; subst ty.
-  case: r1 ha => /=.
+  case: r1 ha => //=.
   (* Lnone *)
   + move=> vi ty1 [<-] /= s1' /write_noneP [->] h; exists s2; split => //.
     by rewrite /write_none; case: h => [ [? ->]| [-> ->]].
@@ -1905,8 +1900,7 @@ Proof.
     + by move=> ??; rewrite (Memory.write_valid _ _ hmem2); apply hvalid.
     + by move=> ???; rewrite (Memory.write_valid _ _ hw); apply hdisj.
     + by move=> ??; rewrite (Memory.write_valid _ _ hw) (Memory.write_valid _ _ hmem2); apply hincl.
-    + (* ça m'a l'air improvable *)
-      move=> p hvalid2; rewrite (Memory.write_valid _ _ hw) => hvalid3 hdisj2.
+    + move=> p hvalid2; rewrite (Memory.write_valid _ _ hw) => hvalid3 hdisj2.
       rewrite (hunch p hvalid2 hvalid3 hdisj2).
       symmetry; apply (Memory.writeP_neq hmem2).
       by apply (disjoint_range_valid_not_valid_U8 hvp1 hvalid3).
@@ -1929,19 +1923,19 @@ Proof.
       by apply: Memory.read_write_any_mem hw hmem2 => //; apply heqmem.
 
   (* Laset *)
-  move=> aa ws x e1; t_xrbindP => e1' /(alloc_eP hvs) he1.
+  move=> aa ws x e1; t_xrbindP => _ /check_diffP hnnew e1' /(alloc_eP hvs) he1.
   move=> hr2 s1'; apply on_arr_varP => n t hty hxt.
   t_xrbindP => i1 v1 /he1 he1' hi1 w hvw t' htt' vm1 hvm1 ?; subst s1'.
   case hlx: get_local hr2 => [pk | ]; last first.
-  + t_xrbindP => ? /check_diffP hnnew <-.
+  + move=> [<-].
     have /get_var_kindP -/(_ _ hxt) : get_var_kind pmap (mk_lvar x) = ok None.
     + by rewrite /get_var_kind /= hlx.
     rewrite /get_gvar /= => hxt2.
     rewrite he1' /= hi1 hxt2 /= hvw /= htt' /=.
     apply: set_varP hvm1=> [v' hv <- | ]; last by rewrite {1} hty.
     rewrite /set_var hv /=.
-    by eexists;(split;first by reflexivity); apply valid_state_set_var. 
-  t_xrbindP => mp hc -[xi ei] ha rmap2 hsetw <- /=.
+    by eexists;(split;first by reflexivity); apply valid_state_set_var.
+  t_xrbindP => sr hc -[xi ei] ha <- /=.
   have {he1} he1 : sem_pexpr [::] s2 e1' >>= to_int = ok i1 by rewrite he1'.
   have [mp' [hgetr hins hal ->]] := set_wordP hsetw. 
   have ? : mp = mp'.
