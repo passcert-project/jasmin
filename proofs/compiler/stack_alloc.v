@@ -305,47 +305,54 @@ Definition clear_bytes_map i (bm:bytes_map) :=
   if Mvar.is_empty bm then None else Some bm.
 *)
 
-Definition set_stack_ptr (rmap:region_map) x align ofs (x':var) :=
-  let r := {| r_slot := x; r_align := align; r_writable := true |} in
-  let z := {| z_ofs := ofs; z_len := wsize_size Uptr |} in
-  let i := interval_of_zone z in
-  let bm := get_bytes_map r rmap in
-  (* clear all bytes correspondint to sub *) 
+Definition set_pure_bytes rv (x:var) sr ofs len :=
+  let z     := sr.(sr_zone) in
+  let z1    := sub_zone_at_ofs z ofs len in
+  let i     := interval_of_zone z1 in
+  let bm    := get_bytes_map sr.(sr_region) rv in
+  let bytes := if ofs is Some _ then ByteSet.add i (get_bytes x bm)
+               else get_bytes x bm
+  in
+  (* clear all bytes corresponding to sub1 *)
   let bm := clear_bytes_map i bm in
-  let bm := Mvar.set bm x' (ByteSet.full i) in
-  {| var_region := rmap.(var_region);
-     region_var := Mr.set rmap.(region_var) r bm |}.
+  (* set the bytes *)
+  let bm := Mvar.set bm x bytes in
+  Mr.set rv sr.(sr_region) bm.
+
+Definition set_bytes rv (x:var) sr (ofs : option Z) (len : Z) :=
+  Let _     := writable sr.(sr_region) in
+  ok (set_pure_bytes rv x sr ofs len).
+
+Definition set_sub_region rmap (x:var) sr (ofs : option Z) (len : Z) :=
+  Let rv := set_bytes rmap x sr ofs len in
+  ok {| var_region := Mvar.set rmap.(var_region) x sr;
+        region_var := rv |}.
 
 Definition sub_region_stkptr s ws z :=
   let r := {| r_slot := s; r_align := ws; r_writable := true |} in
   {| sr_region := r; sr_zone := z |}.
 
+Definition set_stack_ptr (rmap:region_map) x align z (x':var) :=
+  let sr := sub_region_stkptr x align z in
+  Let rv := set_bytes rmap x sr (Some 0)%Z (wsize_size Uptr) in
+  ok {| var_region := rmap.(var_region);
+        region_var := rv |}.
+
 (* TODO: fusion with check_valid ? *)
 (* TODO : use sub_region_stkptr and (?) sub_zone_at_ofs ? *)
 Definition check_stack_ptr (rmap:region_map) s ws z x' :=
-  let r := {| r_slot := s; r_align := ws; r_writable := true |} in
-  let z := {| z_ofs := z.(z_ofs); z_len := wsize_size Uptr |} in
+  let sr := sub_region_stkptr s ws z in
+  let z := sub_zone_at_ofs z (Some 0)%Z (wsize_size Uptr) in
   let i := interval_of_zone z in
-  let bytes := get_var_bytes rmap r x' in
+  let bytes := get_var_bytes rmap sr.(sr_region) x' in
   Let _   := assert (ByteSet.mem bytes i)
                     (Cerr_stk_alloc "check_stack_ptr: the region is partial") in
   ok tt.
 
-Definition set_sub_region (rmap:region_map) (x:var) sr :=
-  let z := sr.(sr_zone) in
-  let i := interval_of_zone z in
-  let bm := get_bytes_map sr.(sr_region) rmap in
-  (* clear all bytes corresponding to sub *) 
-  let bm := clear_bytes_map i bm in
-  let bm := Mvar.set bm x (ByteSet.full i) in
-  {| var_region := Mvar.set rmap.(var_region) x sr;
-     region_var := Mr.set rmap.(region_var) sr.(sr_region) bm |}.
-
 (* Precondition size_of x = ws && length sr.sr_zone = wsize_size ws *)
 Definition set_word rmap (x:var) sr ws :=
-  Let _ := writable sr.(sr_region) in
   Let _ := check_align sr ws in
-  ok (set_sub_region rmap x sr).
+  set_sub_region rmap x sr (Some 0)%Z (size_slot x).
 
 (* If we write to array [x] at offset [ofs], we invalidate the corresponding
    memory zone for the other variables, and mark it as valid for [x].
@@ -356,49 +363,34 @@ Definition set_word rmap (x:var) sr ws :=
 *)
 (* [set_word], [set_stack_ptr] and [set_arr_word] could be factorized? -> think more about it *)
 Definition set_arr_word (rmap:region_map) (x:var) ofs ws :=
-  let len := wsize_size ws in
-  Let sr  := get_sub_region rmap x in
-  let r   := sr.(sr_region) in
-  Let _ := writable r in
-  Let _ := check_align sr ws in
-  let z    := sr.(sr_zone) in
-  let z1   := sub_zone_at_ofs z ofs len in
-  let i    := interval_of_zone z1 in
-  let bm := get_bytes_map sr.(sr_region) rmap in
-  let bytes := if ofs is Some _ then ByteSet.add i (get_bytes x bm)
-               else get_bytes x bm
-  in
-  (* clear all bytes corresponding to sub1 *)
-  let bm := clear_bytes_map i bm in
-  (* set the bytes *)
-  let bm := Mvar.set bm x bytes in
-  ok {| var_region := rmap.(var_region); 
-        region_var := Mr.set rmap.(region_var) sr.(sr_region) bm |}.
-
-Definition set_arr_call rmap x sr := set_sub_region rmap x sr.
-
-Definition set_arr_sub (rmap:region_map) (x:var) ofs len sr_from :=
   Let sr := get_sub_region rmap x in
-  let z := sr.(sr_zone) in
-  let sub_ofs := {| z_ofs := z.(z_ofs) + ofs; z_len := len |} in
-  let bm := get_bytes_map sr.(sr_region) rmap in
-  let bytes := get_bytes x bm in
-  Let _ := assert (region_same sr.(sr_region) sr_from.(sr_region))
-                  (Cerr_stk_alloc "set array: source and destination are not equal") in
-  Let _ := assert (sub_ofs == sr_from.(sr_zone))
-                  (Cerr_stk_alloc "set array: zones are not equal") in
-  let bm := Mvar.set bm x (ByteSet.add (interval_of_zone sub_ofs) bytes) in
-  ok {| var_region := rmap.(var_region); 
-        region_var := Mr.set rmap.(region_var) sr.(sr_region) bm |}.
+  Let _ := check_align sr ws in
+  set_sub_region rmap x sr ofs (wsize_size ws).
 
-(* identical to [set_sub_region], except clearing *)
+(* TODO: verify that the right len is [size_slot x], not sr.(sr_zone).(z_len) !!! *)
+Definition set_arr_call rmap x sr := set_sub_region rmap x sr (Some 0)%Z (size_slot x).
+
+(* identical to [set_sub_region], except clearing
+   TODO: fusion with set_arr_sub ? not sure its worth
+*)
 Definition set_move (rmap:region_map) (x:var) sr :=
   let z := sr.(sr_zone) in
   let i := interval_of_zone z in
   let bm := get_bytes_map sr.(sr_region) rmap in
-  let bm := Mvar.set bm x (ByteSet.full i) in
+(*   let bm := Mvar.set bm x (ByteSet.full i) in *)
+  let bytes := get_bytes x bm in
+  let bm := Mvar.set bm x (ByteSet.add i bytes) in
   {| var_region := Mvar.set rmap.(var_region) x sr;
      region_var := Mr.set rmap.(region_var) sr.(sr_region) bm |}.
+
+Definition set_arr_sub (rmap:region_map) (x:var) ofs len sr_from :=
+  Let sr := get_sub_region rmap x in
+  let sr := sub_region_at_ofs sr (Some ofs) len in
+  Let _ := assert (region_same sr.(sr_region) sr_from.(sr_region))
+                  (Cerr_stk_alloc "set array: source and destination are not equal") in
+  Let _ := assert (sr.(sr_zone) == sr_from.(sr_zone))
+                  (Cerr_stk_alloc "set array: zones are not equal") in
+  ok (set_move rmap x sr).
 
 Definition set_arr_init rmap x sr := set_move rmap x sr.
 
@@ -646,7 +638,7 @@ Definition alloc_lval (rmap: region_map) (r:lval) (ty:stype) :=
   | Lvar x =>
     (* TODO: could we remove this [check_diff] and use an invariant in the proof instead? *)
     Let _ := check_diff x in
-    match get_local x with 
+    match get_local x with
     | None => ok (rmap, r)
     | Some pk => 
       if is_word_type (vtype x) is Some ws then 
@@ -735,6 +727,12 @@ Definition get_Pvar_sub e :=
   | _      => cerror "variable/subarray excepted : 2" 
   end.
 
+(* TODO : currently, we check that the source array is valid and set the target
+   array as valid too. We could, instead, give the same validity to the target
+   array as the source one.
+   [check_vpk] should be replaced with some function returning the valid bytes
+   of y...
+*)
 (* Precondition is_sarr ty *)
 Definition alloc_array_move rmap r e :=
   Let xsub := get_Lvar_sub r in
@@ -789,7 +787,8 @@ Definition alloc_array_move rmap r e :=
       | Pstkptr slot ofsx ws z x' =>
         let: (rmap, ir) :=
           get_addr true rmap x (Lmem Uptr (with_var x pmap.(vrsp)) (cast_ptr ofsx)) sry mk ey ofs in
-        ok (Region.set_stack_ptr rmap slot ws z.(z_ofs) x', ir)
+        Let rmap := Region.set_stack_ptr rmap slot ws z x' in
+        ok (rmap, ir)
       end
     end
   | Some (ofs, len) =>
@@ -965,7 +964,7 @@ Definition alloc_lval_call (srs:seq (option (bool * sub_region) * pexpr)) rmap (
     | (Some (_,mp), _) =>
       Let x := get_Lvar r in
       Let p := get_regptr x in
-      let rmap := Region.set_arr_call rmap (v_var x) mp in
+      Let rmap := Region.set_arr_call rmap (v_var x) mp in
       ok (rmap, Lvar p)
     | (None, _) => cerror "alloc_r_call : please report"
     end
