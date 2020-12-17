@@ -332,9 +332,9 @@ Definition sub_region_stkptr s ws z :=
   let r := {| r_slot := s; r_align := ws; r_writable := true |} in
   {| sr_region := r; sr_zone := z |}.
 
-Definition set_stack_ptr (rmap:region_map) x align z (x':var) :=
-  let sr := sub_region_stkptr x align z in
-  Let rv := set_bytes rmap x sr (Some 0)%Z (wsize_size Uptr) in
+Definition set_stack_ptr (rmap:region_map) s ws z (x':var) :=
+  let sr := sub_region_stkptr s ws z in
+  Let rv := set_bytes rmap x' sr (Some 0)%Z (wsize_size Uptr) in
   ok {| var_region := rmap.(var_region);
         region_var := rv |}.
 
@@ -370,6 +370,20 @@ Definition set_arr_word (rmap:region_map) (x:var) ofs ws :=
 (* TODO: verify that the right len is [size_slot x], not sr.(sr_zone).(z_len) !!! *)
 Definition set_arr_call rmap x sr := set_sub_region rmap x sr (Some 0)%Z (size_slot x).
 
+Definition set_arr_sub (rmap:region_map) (x:var) ofs len sr_from :=
+  Let sr := get_sub_region rmap x in
+  let z := sr.(sr_zone) in
+  let sub_ofs := {| z_ofs := z.(z_ofs) + ofs; z_len := len |} in
+  let bm := get_bytes_map sr.(sr_region) rmap in
+  let bytes := get_bytes x bm in
+  Let _ := assert (region_same sr.(sr_region) sr_from.(sr_region))
+                  (Cerr_stk_alloc "set array: source and destination are not equal") in
+  Let _ := assert (sub_ofs == sr_from.(sr_zone))
+                  (Cerr_stk_alloc "set array: zones are not equal") in
+  let bm := Mvar.set bm x (ByteSet.add (interval_of_zone sub_ofs) bytes) in
+  ok {| var_region := rmap.(var_region); 
+        region_var := Mr.set rmap.(region_var) sr.(sr_region) bm |}.
+
 (* identical to [set_sub_region], except clearing
    TODO: fusion with set_arr_sub ? not sure its worth
 *)
@@ -377,20 +391,9 @@ Definition set_move (rmap:region_map) (x:var) sr :=
   let z := sr.(sr_zone) in
   let i := interval_of_zone z in
   let bm := get_bytes_map sr.(sr_region) rmap in
-(*   let bm := Mvar.set bm x (ByteSet.full i) in *)
-  let bytes := get_bytes x bm in
-  let bm := Mvar.set bm x (ByteSet.add i bytes) in
+  let bm := Mvar.set bm x (ByteSet.full i) in
   {| var_region := Mvar.set rmap.(var_region) x sr;
      region_var := Mr.set rmap.(region_var) sr.(sr_region) bm |}.
-
-Definition set_arr_sub (rmap:region_map) (x:var) ofs len sr_from :=
-  Let sr := get_sub_region rmap x in
-  let sr := sub_region_at_ofs sr (Some ofs) len in
-  Let _ := assert (region_same sr.(sr_region) sr_from.(sr_region))
-                  (Cerr_stk_alloc "set array: source and destination are not equal") in
-  Let _ := assert (sr.(sr_zone) == sr_from.(sr_zone))
-                  (Cerr_stk_alloc "set array: zones are not equal") in
-  ok (set_move rmap x sr).
 
 Definition set_arr_init rmap x sr := set_move rmap x sr.
 
