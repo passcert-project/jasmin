@@ -1336,6 +1336,23 @@ Proof. by apply compat_subtype_undef. Qed.
 Lemma vundef_type_idem v : vundef_type v = vundef_type (vundef_type v).
 Proof. by case: v. Qed.
 
+Lemma type_of_get_var x vm v :
+  get_var vm x = ok v ->
+  subtype (type_of_val v) (x.(vtype)).
+Proof.
+  rewrite /get_var; apply : on_vuP => // t _ <-.
+  by apply subtype_type_of_val.
+Qed.
+
+Lemma type_of_get_gvar x gd vm v :
+  get_gvar gd vm x = ok v ->
+  subtype (type_of_val v) (vtype x.(gv)).
+Proof.
+  rewrite /get_gvar;case:ifP => ?.
+  + by apply type_of_get_var.
+  by move=> heq; rewrite (type_of_get_global heq).
+Qed.
+
 (* -------------------------------------------- *)
 Lemma value_uincl_refl v: @value_uincl v v.
 Proof. by case: v => //=; apply compat_type_undef. Qed.

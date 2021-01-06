@@ -305,6 +305,14 @@ Definition clear_bytes_map i (bm:bytes_map) :=
   if Mvar.is_empty bm then None else Some bm.
 *)
 
+(* TODO: take [bytes] as an argument ? *)
+(* TODO : lemma to be proved
+valid_state ->
+write_mem p ws w = mem2->
+between (sub_region_addr sr) . p ws ->
+eq_sub_region_val mem2 sr bytes v ->
+valid_state rmap2 (with_vm s1 (evm s1).[x <- ok (pword_of_word v)]) (with_mem s2 mem2).
+*)
 Definition set_pure_bytes rv (x:var) sr ofs len :=
   let z     := sr.(sr_zone) in
   let z1    := sub_zone_at_ofs z ofs len in
