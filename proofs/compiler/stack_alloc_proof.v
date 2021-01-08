@@ -314,11 +314,25 @@ Definition get_val_byte v off :=
 
 (* TODO: [ty] seems redundant, since there is the constraint on bytes and
    [get_val_byte] fails if out of bounds. Could we remove it? *)
-Definition eq_sub_region_val (m2:mem) sr bytes v :=
+Definition eq_sub_region_val_read (m2:mem) sr bytes v :=
   forall off,
      ByteSet.memi bytes (sr.(sr_zone).(z_ofs) + off) ->
      forall w, get_val_byte v off = ok w ->
      read_mem m2 (sub_region_addr sr + wrepr _ off) U8 = ok w.
+
+Definition eq_sub_region_val ty m2 sr bytes v :=
+  eq_sub_region_val_read m2 sr bytes v /\
+  (* According to the psem semantics, a variable of type [sword ws] can store
+     a value of type [sword ws'] of shorter size (ws' <= ws).
+     But actually, this is used only for register variables.
+     For stack variables, we check in [alloc_lval] in stack_alloc.v that the
+     value has the same size as the variable, and we remember that fact here.
+  *)
+  match ty with
+  | sword ws => type_of_val v = sword ws
+  | _ => True
+  end.
+
 (*
 Definition eq_sub_region_val ty (m2:mem) sr bytes v := 
   match ty with
@@ -385,7 +399,7 @@ Definition wfr_VALID (rmap:regions) :=
 Definition wfr_VAL (rmap:region_map) (s1:estate) (s2:estate) :=
   forall x sr bytes v, check_gvalid rmap x = Some (sr, bytes) -> 
     get_gvar gd s1.(evm) x = ok v ->
-    eq_sub_region_val s2.(emem) sr bytes v.
+    eq_sub_region_val x.(gv).(vtype) s2.(emem) sr bytes v.
 
 Definition wfr_PTR (rmap:region_map) (s2:estate) :=
   forall x sr, Mvar.get (var_region rmap) x = Some sr ->
@@ -1013,7 +1027,7 @@ Proof. Admitted.
 *)
   Lemma get_val_read_mem (v : value) sr bytes ofs ws i w :
     wf_sub_region sr (type_of_val v) ->
-    eq_sub_region_val (emem s') sr bytes v ->
+    eq_sub_region_val_read (emem s') sr bytes v ->
     ByteSet.mem bytes (interval_of_zone (sub_zone_at_ofs sr.(sr_zone) ofs (wsize_size ws))) ->
     (ofs <> None -> ofs = Some i) ->
     get_val ws v i = ok w ->
@@ -1185,6 +1199,22 @@ Proof.
   move=> [] //= wz' [<-]. left. split=> //. eauto.
 Qed.
 
+Lemma get_val_word ws w :
+  get_val ws (Vword w) 0 = ok w.
+Proof.
+  rewrite /get_val /array_of_val.
+  set empty := WArray.empty _.
+  have [t ht] : exists t, WArray.set empty AAscale 0 w = ok t.
+    + rewrite /WArray.set CoreMem.write_uwrite; first by eexists; reflexivity.
+      by rewrite /= /WArray.validw /WArray.in_range /= Z.leb_refl.
+  rewrite ht /=.
+  by apply (WArray.setP_eq ht).
+Qed.
+
+Lemma get_val_array n aa ws (a : WArray.array n) i :
+  get_val ws (Varr a) (i * mk_scale aa ws) = WArray.get aa ws a i.
+Proof. by rewrite /get_val /WArray.get Z.mul_1_r. Qed.
+
 (*
 Lemma get_val_test ws v :
   type_of_val
@@ -1212,26 +1242,14 @@ Lemma get_val_test ws v :
       have h3: Some 0 ≠ None → Some 0 = Some (0 * mk_scale AAdirect ws) by [].
       have [sr [bytes [wx [wi [hgvalid hmem /= -> -> /= [haddr2 halign]]]]]] :=
         check_mk_addr h0 h1 h2 hgvk hcheck h3 haddr.
-      (*have hh : get_val ws v 0 = type_error.
-      admit.
-      rewrite /get_val /WArray.get /CoreMem.read in hh.*)
-      have [ws' [w [h4 h6]]] := get_gvar_word hty hget.
-      assert (heq := wfr_val hgvalid hget).
+      assert (heq := wfr_val hgvalid hget); rewrite hty in heq.
+      case: heq => heq hval.
       assert (hwf := check_gvalid_wf hgvalid).
-      move /(wf_sub_region_subtype (type_of_get_gvar hget)) : hwf => /= hwf.
-(*       rewrite /= hty in hwf. *)
-(*       assert (h:= wfr_val hgvalid hget); move: h; rewrite hty => h. *)
+      rewrite /= hty -hval in hwf.
       rewrite -haddr2 in halign |- *.
-     (* have: get_val ws v 0 = ok (zero_extend ws w).
-      + rewrite /get_val.
-        rewrite /WArray.get /CoreMem.read /=. *)
-      
-       rewrite h6 /=.
-(*      rewrite (get_val_read_mem hwf heq _ h3 _ _ (w:=w)).
-      simpl. congruence. simpl. rewrite /get_val. assumption.
-      simpl.
-      by move=> [w [-> hread]]; rewrite -haddr2 wrepr0 GRing.addr0 hread //. *)
-      admit.
+      have [ws' [w [_ ?]]] := get_gvar_word hty hget; subst v.
+      case: hval => ?; subst ws'.
+      by rewrite (get_val_read_mem hwf heq hmem h3 (get_val_word w) halign).
     + move=> aa sz x e1 he1 e' v he'. Locate ".[". apply: on_arr_gvarP => n t hty /= hget.
       t_xrbindP => i vi /he1{he1}he1 hvi w hw <-.
       move: he'; t_xrbindP => e1' /he1{he1}he1'.
@@ -1245,15 +1263,13 @@ Lemma get_val_test ws v :
       + by rewrite hty.
       have [sr [bytes [wx [wi [hgvalid /= hmem -> -> /= [haddr2 halign]]]]]] :=
         check_mk_addr h0 h4 h3 hgvk hcheck (mk_ofsiP h0) haddr.
-      assert (h:= wfr_val hgvalid hget). (* ; move: h; rewrite hty => h.*)
+      assert (heq := wfr_val hgvalid hget).
+      case: heq => heq _.
+      assert (hwf := check_gvalid_wf hgvalid).
+      rewrite /= hty in hwf. change (sarr n) with (type_of_val (Varr t)) in hwf.
       rewrite -haddr2 in halign |- *.
-      rewrite (get_val_read_mem _ h hmem (mk_ofsiP h0) _ halign (w:=w)).
-      done.
-      apply check_gvalid_wf in hgvalid. rewrite hty in hgvalid. done.
-      rewrite /get_val /=.
-      Search AAdirect AAscale.
-      move: hw. rewrite /WArray.get. rewrite Z.mul_1_r. done.
-(*       by rewrite (get_arr_read_mem hty h hgvalid hmem (mk_ofsiP h0) hw halign). *)
+      rewrite -get_val_array in hw.
+      by rewrite (get_val_read_mem hwf heq hmem (mk_ofsiP h0) hw halign).
     + move=> sz1 v1 e1 IH e2 v.
       t_xrbindP => ? /check_varP hc e1' /IH hrec <- wv1 vv1 /= hget hto' we1 ve1.
       move=> /hrec -> hto wr hr ?; subst v.
@@ -1269,7 +1285,7 @@ Lemma get_val_test ws v :
     move=> t e He e1 H1 e1' H1' e2 v.
     t_xrbindP => e_ /He he e1_ /H1 hrec e1'_ /H1' hrec' <-.
     by move=> b vb /he /= -> /= -> ?? /hrec -> /= -> ?? /hrec' -> /= -> /= ->.
-  Admitted.
+  Qed.
 
   Definition alloc_eP := check_e_esP.1.
   Definition alloc_esP := check_e_esP.2.
