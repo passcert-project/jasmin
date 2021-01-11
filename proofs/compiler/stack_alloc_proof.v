@@ -328,10 +328,10 @@ Definition eq_sub_region_val ty m2 sr bytes v :=
      For stack variables, we check in [alloc_lval] in stack_alloc.v that the
      value has the same size as the variable, and we remember that fact here.
   *)
-  match ty with
-  | sword ws => type_of_val v = sword ws
-  | _ => True
-  end.
+  (* Actually, it is handful to know that [ty] and [type_of_val v] are the same
+     even in the non-word cases.
+  *)
+  type_of_val v = ty.
 
 (*
 Definition eq_sub_region_val ty (m2:mem) sr bytes v := 
@@ -997,12 +997,19 @@ Lemma memi_mem_U8 bytes z off :
   ByteSet.memi bytes (z.(z_ofs) + off) =
   ByteSet.mem bytes (interval_of_zone (sub_zone_at_ofs z (Some off) (wsize_size U8))).
 Proof.
-Admitted.
+  apply /idP/idP.
+  + move=> hmem; apply /ByteSet.memP; move=> i.
+    rewrite /interval_of_zone /I.memi /= wsize8 !zify => hbound.
+    by have -> : i = z_ofs z + off by lia.
+  move=> /ByteSet.memP; apply.
+  by rewrite /interval_of_zone /I.memi /= wsize8 !zify; lia.
+Qed.
 
 Lemma sub_zone_at_ofs_compose z ofs1 ofs2 len1 len2 :
   sub_zone_at_ofs (sub_zone_at_ofs z (Some ofs1) len1) (Some ofs2) len2 =
   sub_zone_at_ofs z (Some (ofs1 + ofs2)) len2.
-Proof. Admitted.
+Proof. by rewrite /= Z.add_assoc. Qed.
+
 (*
   Lemma get_read_mem (* v *) sr bytes ws w :
     wf_sub_region sr (sword ws) ->
@@ -1250,7 +1257,7 @@ Lemma get_val_test ws v :
       have [ws' [w [_ ?]]] := get_gvar_word hty hget; subst v.
       case: hval => ?; subst ws'.
       by rewrite (get_val_read_mem hwf heq hmem h3 (get_val_word w) halign).
-    + move=> aa sz x e1 he1 e' v he'. Locate ".[". apply: on_arr_gvarP => n t hty /= hget.
+    + move=> aa sz x e1 he1 e' v he'; apply: on_arr_gvarP => n t hty /= hget.
       t_xrbindP => i vi /he1{he1}he1 hvi w hw <-.
       move: he'; t_xrbindP => e1' /he1{he1}he1'.
       have h0 : sem_pexpr [::] s' e1' >>= to_int = ok i.
@@ -1291,214 +1298,6 @@ Lemma get_val_test ws v :
   Definition alloc_esP := check_e_esP.2.
 
 End EXPR.
-
-End Section.
-
-Lemma test2 : ~
-∀ (pmap : pos_map) (stk_size glob_size : Z) (rsp rip : u64) (Slots : Sv.t) 
-  (Addr : slot → u64) (Writable : slot → bool) (Align : slot → wsize),
-  (∀ s : Sv.elt, Sv.In s Slots → no_overflow (Addr s) (size_slot s))
-  → (∀ s1 s2 : Sv.elt,
-       Sv.In s1 Slots
-       → Sv.In s2 Slots
-         → s1 ≠ s2
-           → Writable s1
-             → disjoint_zrange (Addr s1) (size_slot s1) (Addr s2) (size_slot s2))
-    → (∀ s : Sv.elt, Sv.In s Slots → is_align (Addr s) (Align s))
-      → (0 < stk_size
-         → 0 < glob_size
-           → wunsigned rsp + stk_size <= wunsigned rip
-             ∨ wunsigned rip + glob_size <= wunsigned rsp)
-        → ∀ P : uprog,
-            extra_val_t
-            → wf_pmap pmap rsp rip Slots Addr Writable Align
-              → ∀ (rmap : region_map) (m0 : mem) (s s' : estate),
-                  valid_state pmap rsp rip Slots Addr Writable Align P rmap m0 s s'
-                  → (∀ e : pexpr,
-                       (λ e0 : pexpr,
-                          ∀ (e' : pexpr) (v : value),
-                            alloc_e pmap rmap e0 = ok e'
-                            → sem_pexpr (p_globs P) s e0 = ok v
-                              → sem_pexpr [::] s' e' = ok v) e) *
-                    (∀ es : pexprs,
-                       (λ es0 : pexprs,
-                          ∀ (es' : pexprs) (vs : seq value),
-                            alloc_es pmap rmap es0 = ok es'
-                            → sem_pexprs (p_globs P) s es0 = ok vs
-                              → sem_pexprs [::] s' es' = ok vs) es).
-Proof.
-  move=> hwf.
-  set (vrip := {| vtype := sword Uptr; vname := "vrip"%string |}).
-  set (vrsp := {| vtype := sword Uptr; vname := "vrsp"%string |}).
-  set (v := {| vtype := sword U16; vname := "v"%string |}).
-  set (sl := {| vtype := sword U16; vname := "s"%string |}).
-  set (pmap := {| vrip := vrip; vrsp := vrsp;
-                  globals := Mvar.empty _;
-                  locals := Mvar.set (Mvar.empty _) v (Pdirect sl 58 U64 {| z_len := 2; z_ofs := 0 |} Slocal);
-                  vnew := Sv.add vrsp (Sv.add vrip Sv.empty) |}).
-  set (stk_size := 1%Z).
-  set (glob_size := 1%Z).
-  set (rip := wrepr Uptr 35).
-  set (rsp := wrepr Uptr 70).
-  set (Slots := Sv.add sl Sv.empty).
-  set (Addr (s : slot) := wrepr Uptr 128).
-  set (Writable (s : slot) := true).
-  set (Align (s : slot) := U64).
-
-  have h1: ∀ s : Sv.elt, Sv.In s Slots → no_overflow (Addr s) (size_slot s).
-  + by move=> s1 /SvD.F.add_iff [<-|/SvD.F.empty_iff].
-  have h2: ∀ s1 s2 : Sv.elt,
-           Sv.In s1 Slots
-           → Sv.In s2 Slots
-             → s1 ≠ s2
-               → Writable s1
-                 → disjoint_zrange (Addr s1) (size_slot s1) (Addr s2) (size_slot s2).
-  + by move=> s1 s2 /SvD.F.add_iff [<-|/SvD.F.empty_iff //] /SvD.F.add_iff [<-|/SvD.F.empty_iff //].
-  have h3: (∀ s : Sv.elt, Sv.In s Slots → is_align (Addr s) (Align s)).
-  + move=> s1 /SvD.F.add_iff [<-|/SvD.F.empty_iff //].
-    by apply is_align_mod.
-  have h4: 0 < stk_size
-             → 0 < glob_size
-               → wunsigned rsp + stk_size <= wunsigned rip
-                 ∨ wunsigned rip + glob_size <= wunsigned rsp.
-  + move=> _ _. rewrite 2!wunsigned_repr word.modulusZE.
-  rewrite Zmod_small. rewrite Zmod_small. lia.
-  split; [lia|]. rewrite -zify. reflexivity.
-  split; [lia|]. rewrite -zify. reflexivity.
-
-  set P : uprog := {| p_funcs := [::]; p_globs := [::]; p_extra := tt |}.
-  set extra : u64 := wrepr _ 90.
-  have wf_pmap: wf_pmap pmap rsp rip Slots Addr Writable Align.
-  + split=> //.
-    + by rewrite /=; apply SvD.F.add_2; apply SvD.F.add_1.
-    + by rewrite /=; apply SvD.F.add_1.
-    move=> x pk. rewrite Mvar.setP.
-    case: eqP.
-    + move=> <- [<-]. split=> //.
-      + by apply SvD.F.add_1.
-      + move=> _; rewrite Mvar.get0 //.
-  set rmap : region_map := {| var_region := Mvar.set (Mvar.empty _) v
-      {| sr_region := {| r_slot := sl; r_align := U64; r_writable := true |};
-         sr_zone := {| z_len := 8; z_ofs := 0 |} |};
-                              region_var := Mr.set (Mr.empty _) {| r_slot := sl; r_align := U64; r_writable := true |}
-                                            (Mvar.set (Mvar.empty _) v
-                                              (ByteSet.full {| imin := 0; imax := 2 |})) |}.
-  have m: mem.
-  + admit.
-  set m0 : mem := m.
-  set pw : pword U16 := {| pw_size := U8; pw_word := wrepr U8 13; pw_proof := @refl_equal _ (U8 <= U16)%CMP |}.
-  set s : estate := {| emem := m; evm := vmap0.[vrip <- ok (pword_of_word rip)]
-                                    .[vrsp <- ok (pword_of_word rsp)]
-                                    .[v <- ok pw] |}.
-  (* en fait, ça n'a pas de sens de write_mem -> il faudrait allouer de la nouvelle
-     mémoire (avec alloc_stack ?), mais ça devient trop complexe ! *)
-  have [m1 hm1] : exists m, write_mem m0 (wrepr Uptr 128) U16 (wrepr _ 1037) = ok m.
-  + admit.
-  set s' : estate := {| emem := m1;
-                        evm := vmap0.[vrip <- ok (pword_of_word rip)]
-                                    .[vrsp <- ok (pword_of_word rsp)]
-                                    .[v <- ok pw] |}.
-  have h5: valid_state pmap rsp rip Slots Addr Writable Align P rmap m0 s s'.
-  + split=> //.
-    + move=> ? p /SvD.F.add_iff [<-|/SvD.F.empty_iff //].
-      move=> hb.
-      apply /Memory.valid_pointerP.
-      split. apply is_align8.
-      have := write_mem_valid_pointer hm1.
-      rewrite -(Memory.write_valid _ _ hm1).
-      move=> /Memory.valid_pointerP [_] hh k hk.
-      move: hb.
-      rewrite /between /zbetween !zify /= => hb.
-      rewrite -(wrepr_unsigned p).
-      rewrite -wrepr_add.
-      move: (hh (wunsigned p - 128 + k)).
-      rewrite -wrepr_add.
-      replace (128 + (wunsigned p - 128 + k)) with (wunsigned p + k) by lia.
-      apply.
-      rewrite /wsize_size /=. rewrite /Addr wsize8 /= in hk hb.
-      rewrite wunsigned_repr word.modulusZE Zmod_small in hb.
-      lia.
-      done.
-    Search _ (mem -> mem).
-    + admit.
-    + move=> *. by rewrite (Memory.write_valid _ _ hm1).
-    + by rewrite /get_var Fv.setP_neq // Fv.setP_neq // Fv.setP_eq.
-    + by rewrite /get_var Fv.setP_neq // Fv.setP_eq.
-    + move=> ? ?. rewrite Mvar.setP.
-      case: eqP.
-      + move=> <- [<-]. split.
-        + split=> //=. by apply SvD.F.add_1.
-        split => //.
-      by rewrite Mvar.get0.
-    + split=> //.
-      + move=> x ???; rewrite /check_gvalid.
-        case: (@idP (is_glob x)) => //.
-        move=> hlocal.
-        rewrite Mvar.setP.
-        case: eqP; last by rewrite Mvar.get0.
-        move=> hv [<- <-].
-        rewrite get_gvar_nglob; last by apply /negP.
-        rewrite -hv /get_var /=.
-        rewrite Fv.setP_eq /=. move => [<-].
-        move=> off /= hmem w hget.
-        rewrite (Memory.write_read8 _ hm1).
-        move: hget.
-        rewrite /get_val_byte /get_val.
-        t_xrbindP => a ha hoff.
-        have [hh1 hh2 _] := WArray.get_bound hoff.
-        rewrite /= wsize8 Z.mul_1_r in hh1 hh2.
-        assert (off = 0) as -> by lia.
-        rewrite /sub_region_addr /=.
-        rewrite wrepr0 !GRing.addr0. rewrite /=.
-        rewrite -hoff.
-        move: ha; rewrite /array_of_val.
-        t_xrbindP => a' ha ?; subst a'.
-        rewrite /WArray.get. change (mk_scale AAdirect U8) with (mk_scale AAscale U8).
-        rewrite -/(WArray.get _ _ _ _).
-        rewrite (WArray.set_get8 _ ha) /=.
-        rewrite /LE.wread8 /=.
-        rewrite !word.subwordE.
-        Locate "[ 'tuple' _ | _ ]".
-        do 2 f_equal.
-        apply eq_mktuple. move=> i. rewrite mul0n addn0.
-        case: i => /= m2 hm2.
-        assert (List.In m2 [:: 0; 1; 2; 3; 4; 5; 6; 7])%nat.
-        + rewrite /=. rewrite /nat_of_wsize /= /nat7 in hm2.
-        destruct m2; [left; reflexivity|right].
-        destruct m2; [left; reflexivity|right].
-        destruct m2; [left; reflexivity|right].
-        destruct m2; [left; reflexivity|right].
-        destruct m2; [left; reflexivity|right].
-        destruct m2; [left; reflexivity|right].
-        destruct m2; [left; reflexivity|right].
-        destruct m2; [left; reflexivity|right]. done.
-        rewrite /= in H.
-        decompose [or] H; last by []; subst m2; reflexivity.
-      move=> ??. rewrite Mvar.setP.
-      case: eqP; last by rewrite Mvar.get0.
-      move=> <- [<-]. eexists. by split.
-    admit.
-
-  specialize (hwf pmap stk_size glob_size rsp rip Slots Addr Writable Align).
-  specialize (hwf h1 h2 h3 h4 P extra wf_pmap rmap m0 s s' h5). clear h1 h2 h3 h4 h5.
-  destruct hwf as [hwf _].
-  set e : pexpr := Pvar (mk_lvar {| v_var := v; v_info := 3%positive |}).
-  set e' : pexpr := Pload U16 (with_var {| v_var := v; v_info := 3%positive |} vrsp)
-     (mk_ofs AAdirect U64 0 58).
-  set x : value := Vword (wrepr U8 13).
-  have h6 : alloc_e pmap rmap e = ok e'.
-  + rewrite /=.
-    rewrite /check_vpk_word /check_vpk /check_valid /=.
-    rewrite /get_var_bytes /get_bytes_map. rewrite Mr.setP_eq /=.
-    rewrite /get_bytes Mvar.setP_eq /=.
-    rewrite /interval_of_zone /=. rewrite mem_full //.
-  specialize (hwf e e' x h6).
-  move: hwf.
-  rewrite /= /get_gvar /get_var /=. rewrite Fv.setP_eq /=.
-  rewrite Fv.setP_neq // Fv.setP_eq /=.
-  move=> /(_ refl_equal).
-  rewrite 2!zero_extend_u. rewrite -wrepr_add.
-  rewrite (Memory.writeP_eq hm1) /=. done.
 
 Lemma check_diffP x t : check_diff pmap x = ok t -> ~Sv.In x (vnew pmap).
 Proof. by rewrite /check_diff; case:ifPn => /Sv_memP. Qed.
@@ -1722,20 +1521,28 @@ Proof.
   by apply zbetween_refl.
 Qed.
 
-Lemma disjoint_zrange_eq_sub_region_val p sr bytes ty mem1 mem2 ws w v: 
-  wf_sub_region sr ty ->
-  disjoint_zrange p (wsize_size ws) (sub_region_addr sr) (size_of ty) ->
+Lemma get_val_byte_bound v off w :
+  get_val_byte v off = ok w -> 0 <= off /\ off < size_val v.
+Proof.
+  rewrite /get_val_byte /get_val.
+  t_xrbindP=> a harray /WArray.get_bound /= [].
+  rewrite Z.mul_1_r wsize8 Z2Pos.id; last by apply size_of_gt0.
+  by lia.
+Qed.
+
+Lemma eq_sub_region_val_disjoint_zrange p sr bytes ty mem1 mem2 ws w v: 
+  disjoint_zrange p (wsize_size ws) (sub_region_addr sr) (size_val v) ->
   write_mem mem1 p ws w = ok mem2 ->
   eq_sub_region_val ty mem1 sr bytes v ->
   eq_sub_region_val ty mem2 sr bytes v.
 Proof.
-  case: ty => // [pt | ws']; rewrite /size_of => hwf hd hw /=.
-  + move=> [t] [-> heq]; exists t; split => // off hoff hmem v1 /(heq _ hoff hmem) <-.
-    apply: (Memory.writeP_neq hw).
-    by apply (disjoint_zrange_byte hd).
-  move=> [w1] [-> heq]; exists w1; split => // hmem; rewrite -(heq hmem).
-  by apply: (Memory.writeP_neq hw).
+  move=> hd hw [hread hval]; split=> // off hmem w' hget.
+  rewrite -(hread _ hmem _ hget).
+  apply (Memory.writeP_neq hw).
+  apply (disjoint_zrange_byte hd).
+  by apply (get_val_byte_bound hget).
 Qed.
+
 (*
 Lemma valid_mp_disjoint mp1 mp2 ty1 ty2: 
   wf_sub_region mp1 ty1 -> 
@@ -1771,7 +1578,7 @@ Proof.
   rewrite /disjoint_zrange; move=> [*]; split=> //; lia.
 Qed.
 
-Lemma eq_sub_region_val_write_disj rmap m0 s1 s2 sr ty sry ty' mem2 bytes v ws w p:
+Lemma eq_sub_region_val_disjoint_slots rmap m0 s1 s2 sr ty sry ty' mem2 bytes v ws w p:
   valid_state rmap m0 s1 s2 ->
   wf_sub_region sr ty ->
   wf_sub_region sry ty' ->
@@ -1782,8 +1589,11 @@ Lemma eq_sub_region_val_write_disj rmap m0 s1 s2 sr ty sry ty' mem2 bytes v ws w
   eq_sub_region_val ty' (emem s2) sry bytes v ->
   eq_sub_region_val ty' mem2 sry bytes v.
 Proof.
-  move=> hvs hwf hwfy hd hw hb.
-  apply: disjoint_zrange_eq_sub_region_val => //.
+  move=> hvs hwf hwfy hd hw hb hmem2 hval.
+  have [_ hty] := hval.
+  move: hmem2 hval.
+  apply: eq_sub_region_val_disjoint_zrange => //.
+  rewrite hty.
   apply: (disjoint_zrange_incl_l hb).
   apply (disjoint_zrange_incl (zbetween_sub_region_addr hwf) (zbetween_sub_region_addr hwfy)).
   apply (disjoint_writable hwf.(wfr_slot) hwfy.(wfr_slot) hd).
@@ -1859,24 +1669,7 @@ Proof.
   by apply /idP/idP; rewrite !Zcmp_le !zify; lia.
 Qed.
 
-Lemma memi_mem_U8 bytes z off :
-  ByteSet.memi bytes (z.(z_ofs) + off) =
-  ByteSet.mem bytes (interval_of_zone (sub_zone_at_ofs z (Some off) (wsize_size U8))).
-Proof.
-  apply /idP/idP.
-  + move=> hmem; apply /ByteSet.memP; move=> i.
-    rewrite /interval_of_zone /I.memi /= wsize8 !zify => hbound.
-    by have -> : i = z_ofs z + off by lia.
-  move=> /ByteSet.memP; apply.
-  by rewrite /interval_of_zone /I.memi /= wsize8 !zify; lia.
-Qed.
-
-Lemma sub_zone_at_ofs_compose z ofs1 ofs2 len1 len2 :
-  sub_zone_at_ofs (sub_zone_at_ofs z (Some ofs1) len1) (Some ofs2) len2 =
-  sub_zone_at_ofs z (Some (ofs1 + ofs2)) len2.
-Proof. by rewrite /= Z.add_assoc. Qed.
-
-Lemma eq_sub_region_val_write_same_region rmap m0 s1 s2 sr ty sry ty' mem2 bytes v ws w p:
+Lemma eq_sub_region_val_same_slot rmap m0 s1 s2 sr ty sry ty' mem2 bytes v ws w p:
   valid_state rmap m0 s1 s2 ->
   wf_sub_region sr ty ->
   wf_sub_region sry ty' ->
@@ -1886,7 +1679,35 @@ Lemma eq_sub_region_val_write_same_region rmap m0 s1 s2 sr ty sry ty' mem2 bytes
   eq_sub_region_val ty' (emem s2) sry bytes v ->
   eq_sub_region_val ty' mem2 sry (ByteSet.remove bytes (interval_of_zone sr.(sr_zone))) v.
 Proof.
-  move=> hvs hwf hwfy hr hb hw.
+  move=> hvs hwf hwfy hr hb hw [hread hty'].
+  split=> //.
+  move=> off hmem w' hget.
+  apply: (hread _ _ _ hget).
+  apply: (Memory.writeP_neq hw).
+  
+  move: hmem.
+  rewrite memi_mem_U8 => /mem_remove [hmem hdisj]. v1 /(heq _ hoff).
+    rewrite memi_mem_U8 => /(_ hmem) <-.
+    apply: (Memory.writeP_neq hw).
+    apply (disjoint_zrange_incl_l hb).
+    rewrite offset_sub_region_addr.
+    have hwf': wf_sub_region (sub_region_at_ofs sry (Some off) (wsize_size U8)) sword8.
+    + change (wsize_size U8) with (size_of sword8).
+      apply: (sub_region_at_ofs_wf hwfy).
+      by move=> _ [<-]; rewrite /= wsize8; lia.
+    apply (disjoint_zones_disjoint_zrange hwf hwf' hr).
+    rewrite (disjoint_interval_of_zone (wf_zone_len_gt0 hwf)) in hdisj; last by apply wsize_size_pos.
+    rewrite sub_zone_at_ofs_compose Z.add_0_r.
+    apply: disjoint_zones_incl_l hdisj.
+    by apply (zbetween_zone_sub_zone_at_ofs_0 hwf.(wfz_len)).
+  
+  apply (disjoint_zrange_incl_l hb).
+  have:= (disjoint_zones_disjoint_zrange hwf hwfy hr).
+  rewrite (disjoint_interval_of_zone (wf_zone_len_gt0 hwf)) in hdisj; last by apply wsize_size_pos.
+  apply: disjoint_zones_incl_l hdisj.
+  by apply (zbetween_zone_sub_zone_at_ofs_0 hwf.(wfz_len)).
+  
+  
   case: ty' hwfy => // [pt | ws'] => hwfy.
   + move=> [t] [-> heq]; exists t; split => // off hoff.
     rewrite memi_mem_U8 => /mem_remove [hmem hdisj] v1 /(heq _ hoff).
