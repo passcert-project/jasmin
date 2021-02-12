@@ -424,6 +424,7 @@ Section SPEC.
 
   Record alloc_stack_spec : Prop := mkASS {
     ass_read_old : forall p s, valid_pointer m p s -> read_mem m p s = read_mem m' p s;
+    ass_read_new : forall p, ~valid_pointer m p U8 -> valid_pointer m' p U8 -> read_mem m' p U8 = Error ErrAddrInvalid;
     ass_valid    : forall p,
       valid_pointer m' p U8 =
       valid_pointer m p U8 || between pstk sz p U8;
@@ -490,8 +491,8 @@ Parameter mem : Type.
 Declare Instance CM : coreMem Pointer mem.
 Declare Instance M : memory mem.
 
-Parameter readV : forall m p s,
-  reflect (exists v, read_mem m p s = ok v) (valid_pointer m p s).
+Parameter readV : forall m p s v,
+  read_mem m p s = ok v -> valid_pointer m p s.
 
 Parameter writeV : forall m p s v,
   reflect (exists m', write_mem m p s v = ok m') (valid_pointer m p s).

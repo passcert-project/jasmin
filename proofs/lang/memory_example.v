@@ -219,7 +219,7 @@ Module MemoryI : MemoryT.
   Lemma addP p k: add p k = (p + wrepr U64 k)%R.
   Proof. done. Qed.
 
-  Definition is_zalloc (m: Mz.t unit) (p:Z) : bool :=
+  Definition is_zalloc T (m: Mz.t T) (p:Z) : bool :=
     if Mz.get m p is Some _ then true else false.
 
   Record frame := { frame_size : Z ; frame_padding : Z }.
@@ -272,10 +272,22 @@ Module MemoryI : MemoryT.
   Definition is_alloc (m:mem) (p:pointer) (ws: wsize) :=
     all (fun i => is_zalloc m.(alloc) (wunsigned (add p i))) (ziota 0 (wsize_size ws)).
 
+  Definition is_init (m:mem) (p:pointer) (ws: wsize) :=
+    all (fun i => is_zalloc m.(data) (wunsigned (add p i))) (ziota 0 (wsize_size ws)).
+
   Lemma is_allocP m p ws :
     reflect (forall i, 0 <= i < wsize_size ws ->
                is_zalloc m.(alloc) (wunsigned (add p i)))
            (is_alloc m p ws).
+  Proof.
+    apply: equivP; first by apply allP.
+    by split => h i hi; apply h; move: hi; rewrite in_ziota !zify Z.add_0_l.
+  Qed.
+
+  Lemma is_initP m p ws :
+    reflect (forall i, 0 <= i < wsize_size ws ->
+               is_zalloc m.(data) (wunsigned (add p i)))
+           (is_init m p ws).
   Proof.
     apply: equivP; first by apply allP.
     by split => h i hi; apply h; move: hi; rewrite in_ziota !zify Z.add_0_l.
@@ -297,8 +309,10 @@ Module MemoryI : MemoryT.
        stk_freeP   := m.(stk_freeP);
     |}.
 
-  Definition valid m p ws := assert (valid_pointer m p ws) ErrAddrInvalid.
+  Definition validw m p ws := assert (valid_pointer m p ws) ErrAddrInvalid.
 
+  Definition validr m p ws := assert (valid_pointer m p ws && is_init m p ws) ErrAddrInvalid.
+  
   Lemma is_align_wunsigned_add ptr ws i :
     is_align ptr ws →
     0 <= i < wsize_size ws →
@@ -310,32 +324,37 @@ Module MemoryI : MemoryT.
     Psatz.lia.
   Qed.
 
-  Lemma sub_add m p s i t: valid m p s = ok t -> 0 <= i < wsize_size s -> sub (add p i) p = i.
+  Lemma sub_add m p s i t: validw m p s = ok t -> 0 <= i < wsize_size s -> sub (add p i) p = i.
   Proof.
-    rewrite /valid => /assertP; rewrite /valid_pointer => /andP [] al _ hi.
+    rewrite /validw => /assertP; rewrite /valid_pointer => /andP [] al _ hi.
     rewrite subE (is_align_wunsigned_add al hi); Psatz.lia.
   Qed.
 
-  Lemma validw_uset m p v p' s : valid (uset m p v) p' s = valid m p' s.
+  Lemma validw_uset m p v p' s : validw (uset m p v) p' s = validw m p' s.
   Proof. done. Qed.
 
   Lemma validrP m p s i t:
-    valid m p s = ok t ->
+    validr m p s = ok t ->
     0 <= i < wsize_size s ->
-    valid m (add p i) U8 = ok t.
+    validr m (add p i) U8 = ok t.
   Proof.
-    rewrite /valid /valid_pointer is_align8 /= andbC.
-    by case: is_allocP => //= ha _ {}/ha; rewrite /is_alloc /= add_0 => ->; case: t.
+    rewrite /validr /valid_pointer is_align8 /= andbC.
+    case: is_allocP => //=; last by rewrite !andbF.
+    case: is_initP  => //= hi ha _ hb.
+    by rewrite /is_alloc /is_init /= add_0 (hi _ hb) (ha _ hb) /=; case: t.
   Qed.
 
   Lemma validw_validr m p s i v t k:
-    valid m p s = ok t ->
+    validw m p s = ok t ->
     0 <= i < wsize_size s ->
-    valid (uset m (add p i) v) k U8 = if add p i == k then ok t else valid m k U8.
+    validr (uset m (add p i) v) k U8 = if add p i == k then ok t else validr m k U8.
   Proof.
-    rewrite /valid /valid_pointer is_align8 /=.
+    rewrite /validw /validr /valid_pointer is_align8 /=.
     case: andP => //= -[_ /is_allocP h] [<-] /h.
-    by rewrite /is_alloc /= add_0 andbT; case:eqP => // <- ->.
+    rewrite /is_alloc /is_init /= add_0 andbT; case:eqP => //.
+    + by move=> <- ->; rewrite /is_zalloc Mz.setP_eq.
+    move=> hne ?; rewrite /is_zalloc Mz.setP_neq //.
+    by apply /eqP => /wunsigned_inj heq; apply hne.
   Qed.
 
   Lemma setP m z1 z2 v:
@@ -424,6 +443,9 @@ Module MemoryI : MemoryT.
   Definition set_alloc b (m:Mz.t unit) (ptr sz:Z) :=
     foldl (fun m k => if b then Mz.set m k tt else Mz.remove m k) m (ziota ptr sz).
 
+  Definition clear_data (m:Mz.t u8) (ptr sz:Z) :=
+    foldl (fun m k => Mz.remove m k) m (ziota ptr sz).
+
   Lemma set_allocP b m p sz x :
     is_zalloc (set_alloc b m p sz) x =
       if (p <=? x) && (x <? p + sz) then b else is_zalloc m x.
@@ -509,7 +531,7 @@ Module MemoryI : MemoryT.
     | right _ => Error ErrStack
     | left C =>
       ok
-        {| data := m.(data);
+        {| data := clear_data m.(data) (wunsigned m.(stk_root) - (footprint_of_frame f + footprint_of_stack m.(frames))) f.(frame_size);
            alloc := set_alloc true m.(alloc) (wunsigned m.(stk_root) - (footprint_of_frame f + footprint_of_stack m.(frames))) f.(frame_size);
            stk_root := m.(stk_root);
            stk_limit := m.(stk_limit);
@@ -648,22 +670,23 @@ Module MemoryI : MemoryT.
     by move => ->; rewrite add_0.
   Qed.
 
-  Lemma readV (m:mem) p s: reflect (exists v, read_mem m p s = ok v) (valid_pointer m p s).
+  Lemma readV (m:mem) p s v: read_mem m p s = ok v -> valid_pointer m p s.
   Proof.
-    rewrite /read_mem /CoreMem.read /= /valid.
-    by (case: valid_pointer => /=; constructor) => [ | []//]; eauto.
+    rewrite /read_mem /CoreMem.read /= /validr.
+    by t_xrbindP => _ /assertP /andP [].
   Qed.
 
   Lemma writeV m p s (v:word s):
     reflect (exists m', write_mem m p v = ok m') (valid_pointer m p s).
   Proof.
-    rewrite /write_mem /CoreMem.write /= /valid.
+    rewrite /write_mem /CoreMem.write /= /validw.
     by (case: valid_pointer => /=; constructor) => [ | []//]; eauto.
   Qed.
 
   Lemma read_mem_error m p s e: read_mem m p s = Error e -> e = ErrAddrInvalid.
   Proof.
-    by rewrite /read_mem /CoreMem.read /= /valid; case: valid_pointer => [|[<-]].
+    rewrite /read_mem /CoreMem.read /= /validr; case: valid_pointer => [/=|[<-]//].
+    by case: is_init => //= -[] ->.    
   Qed.
 
   Lemma write_read8 m m' p ws (v: word ws) k :
@@ -678,7 +701,7 @@ Module MemoryI : MemoryT.
     write_mem m p v = ok m' ->
     validw m p s = ok tt /\ m' = CoreMem.uwrite m p v.
   Proof.
-    by rewrite /write_mem /CoreMem.write /= /valid /assert; case:ifP => //= _ [<-].
+    by rewrite /write_mem /CoreMem.write /= /validw /assert; case:ifP => //= _ [<-].
   Qed.
 
   Lemma write_mem_invariant T (P: mem → T) :
@@ -709,14 +732,54 @@ Module MemoryI : MemoryT.
     move => ok_m'; split => /=; exact: write_mem_invariant ok_m'.
   Qed.
 
-  Lemma writeP_eq m m' p s (v :word s):
+  Lemma write_mem_zget m p s (v : word s) m' k :
+    write_mem m p v = ok m' ->
+    Mz.get (data m') (wunsigned k) = 
+      (let i := sub k p in
+            if (0 <=? i) && (i <? wsize_size s) then Some (LE.wread8 v i) else Mz.get (data m) (wunsigned k)).
+  Proof.
+    move=> /write_memE [] /sub_add hsa -> /=.
+    set i := sub k p.
+    have := in_ziota 0 (wsize_size s) i.
+    rewrite Z.add_0_l => <-.
+    rewrite /CoreMem.uwrite /=.
+    have : ∀ z : Z, z \in ziota 0 (wsize_size s) → sub (add p z) p = z.
+    + by move=> z; rewrite in_ziota Z.add_0_l !zify; apply hsa. 
+    elim: (ziota _ _) m => //= {hsa}.
+    move=> j l hrec m hsa; rewrite hrec; last first.
+    + by move=> z h; apply /hsa; rewrite in_cons h orbT.
+    rewrite in_cons.
+    case: eqP => [<- | h ] /=; case: ifP => // ?.
+    + by rewrite /i add_sub Mz.setP_eq.
+    rewrite Mz.setP_neq //.
+    apply /eqP => /wunsigned_inj => ?; subst k; apply h.
+    by rewrite /i hsa // mem_head.
+  Qed.
+
+  Lemma write_mem_init_def m m' p s (v : word s) k : 
+     write_mem m p v = ok m' -> 
+     is_init m' k U8 = 
+        (let i := sub k p in
+         (0 <=? i) && (i <? wsize_size s) || is_init m k U8).
+  Proof.
+    by rewrite /is_init /= add_0 !andbT /is_zalloc => /write_mem_zget /= ->; case: ifP.
+  Qed.
+
+  Lemma writeP_eq m m' p s (v : word s):
     write_mem m p v = ok m' ->
     read_mem m' p s = ok v.
   Proof.
-    move=> hw; rewrite /read_mem /CoreMem.read /= /valid.
+    move=> hw; rewrite /read_mem /CoreMem.read /= /validr.
     rewrite (write_valid _ _ hw).
     (case: (writeV m p v); rewrite hw) => [[m1 _] /= | []]; last by eauto.
-    by rewrite (CoreMem.writeP_eq hw) LE.decodeK.
+    rewrite (CoreMem.writeP_eq hw) LE.decodeK.
+    have -> // : is_init m' p s.
+    apply /is_initP => i hi.
+    assert (h := write_mem_init_def (add p i) hw).
+    have hv : valid_pointer m p s by apply /(@writeV m p _ v); exists m'.
+    move: h; rewrite /is_init /= add_0 andbT => ->.
+    rewrite !zify; have := (sub_add (m:= m) (p:=p) _ hi).
+    by move=> h; rewrite (h tt); auto; rewrite /validw hv.
   Qed.
 
   Lemma writeP_neq m m' p s (v :word s) p' s':
@@ -724,8 +787,15 @@ Module MemoryI : MemoryT.
     disjoint_range p s p' s' ->
     read_mem m' p' s' = read_mem m p' s'.
   Proof.
-    rewrite /read_mem /CoreMem.read /= /valid => hw [ /ZleP hno /ZleP hno' hd].
+    rewrite /read_mem /CoreMem.read /= /validr => hw [ /ZleP hno /ZleP hno' hd].
     rewrite (write_valid p' s' hw); case:valid_pointer => //=.
+    have -> : (is_init m' p' s') = (is_init m p' s').
+    + apply eq_in_all => k; rewrite in_ziota !zify => hk.
+      assert (h := write_mem_init_def (add p' k) hw).
+      move: h; rewrite /is_init /= add_0 !andbT => ->.
+      have ? := wunsigned_range p'.
+      rewrite subE addE wunsigned_add; last by Psatz.lia.
+      by case: andP => //; rewrite !zify; Psatz.lia.
     rewrite (CoreMem.writeP_neq hw) // => i i' hi hi'.
     rewrite !addE => heq.
     have : wunsigned (p + wrepr U64 i)%R = wunsigned (p' + wrepr U64 i')%R by rewrite heq.
@@ -740,12 +810,15 @@ Module MemoryI : MemoryT.
     write_mem m1' pw vw = ok m2' ->
     read_mem m2 pr szr = read_mem m2' pr szr.
   Proof.
+   (*
     move=> hv hr hw hw'; move: hr; rewrite /read_mem /CoreMem.read /= /valid.
     rewrite (write_valid _ _ hw) (write_valid _ _ hw') hv /=.
     case: valid_pointer => //= h; have {h}/eqP/CoreMem.uread_decode h := ok_inj h; do 2 f_equal.
     apply /eqP /CoreMem.ureadP => i hin.
     by rewrite (CoreMem.write_uget _ hw) (CoreMem.write_uget _ hw') h.
   Qed.
+*)
+  Admitted.
 
   (** Allocation *)
   Lemma footprint_of_stack_pos (m: mem) :
@@ -794,8 +867,16 @@ Module MemoryI : MemoryT.
       by rewrite (ass_valid ok_m') => ->.
     move: ok_m'.
     rewrite /alloc_stack; case: Sumbool.sumbool_of_bool => // h [<-].
-    by rewrite /read_mem /CoreMem.read /= /CoreMem.uread /= /valid ok_m_p_s => ->.
-  Qed.
+    rewrite /read_mem /CoreMem.read /= /CoreMem.uread /= /validr ok_m_p_s => ->.
+  Admitted.
+
+  Lemma ass_read_new m ws_stk sz sz' m' :
+    alloc_stack m ws_stk sz sz' = ok m' →
+    ∀ p,
+    ~valid_pointer m p U8 → valid_pointer m' p U8 →
+    read_mem m' p U8 = Error ErrAddrInvalid.
+  Proof.
+  Admitted.
 
   Lemma ass_align m ws_stk sz sz' m' :
     alloc_stack m ws_stk sz sz' = ok m' →
@@ -893,6 +974,7 @@ Module MemoryI : MemoryT.
     move => o.
     split; rewrite ?top_stackE.
     - exact: ass_read_old o.
+    - exact: ass_read_new o.
     - exact: ass_valid o.
     - exact: ass_align o.
     - exact: ass_fresh o.
@@ -953,7 +1035,7 @@ Module MemoryI : MemoryT.
     have ok_p_s : valid_pointer m p s.
     + apply/valid_pointerP; apply: (conj al_p) => k /valid_p.
       by rewrite (fss_valid m) => /andP[].
-    by rewrite /read_mem /CoreMem.read /= /valid ok_p_s ok_p_s'.
+    by rewrite /read_mem /CoreMem.read /= /validr ok_p_s ok_p_s'.
   Qed.
 
   Lemma free_stackP m :
