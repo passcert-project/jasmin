@@ -315,13 +315,9 @@ Context {T} {pT:progT T}.
 Class semCallParams := SemCallParams {
   init_state : extra_fun_t -> extra_prog_t -> extra_val_t -> estate -> exec estate;
   finalize   : extra_fun_t -> mem -> mem;
-  equiv_mem  : mem -> mem -> mem -> Prop;
 }.
 
 Context {sCP : semCallParams}.
-
-Definition equiv_state m s s' := 
-   evm s = evm s' /\ equiv_mem m (emem s) (emem s'). 
 
 Variable P:prog.
 Variable ev: extra_val_t.
@@ -411,10 +407,6 @@ with sem_call : mem -> funname -> seq value -> mem -> seq value -> Prop :=
     init_state f.(f_extra) (p_extra P) ev (Estate m1 vmap0) = ok s0 ->
     write_vars f.(f_params) vargs s0 = ok s1 ->
     sem s1 f.(f_body) s2 ->
-   (* (forall s1', equiv_state m1 s1 s1' -> 
-                 exists s2', sem s1' f.(f_body) s2' /\ equiv_state m1 s2 s2') -> *)
-    (forall m1' , equiv_mem m1 (emem s1) m1' -> 
-                 exists m2', sem (with_mem s1 m1') f.(f_body) (with_mem s2 m2') /\ equiv_mem m1 (emem s2) m2') -> 
     mapM (fun (x:var_i) => get_var s2.(evm) x) f.(f_res) = ok vres ->
     mapM2 ErrType truncate_val f.(f_tyout) vres = ok vres' ->
     m2 = finalize f.(f_extra) s2.(emem)  ->
@@ -601,12 +593,6 @@ Section SEM_IND.
       write_vars (f_params f) vargs s0 = ok s1 ->
       sem s1 (f_body f) s2 ->
       Pc s1 (f_body f) s2 ->
-      (forall m1', equiv_mem m1 (emem s1) m1' -> 
-           exists m2', [/\ sem (with_mem s1 m1') f.(f_body) (with_mem s2 m2'), 
-                           equiv_mem m1 (emem s2) m2' & 
-                           Pc (with_mem s1 m1') f.(f_body) (with_mem s2 m2') ] ) ->
-(*      (forall s1', equiv_state m1 s1 s1' -> 
-          exists s2', [/\ sem s1' f.(f_body) s2', equiv_state m1 s2 s2' & Pc s1' (f_body f) s2']) -> *)
       mapM (fun x : var_i => get_var s2.(evm) x) (f_res f) = ok vres ->
       mapM2 ErrType truncate_val f.(f_tyout) vres = ok vres' ->
       m2 = finalize f.(f_extra) s2.(emem) ->
@@ -665,14 +651,8 @@ Section SEM_IND.
   with sem_call_Ind (m : mem) (f13 : funname) (l : seq value) (m0 : mem)
          (l0 : seq value) (s : sem_call m f13 l m0 l0) {struct s} : Pfun m f13 l m0 l0 :=
     match s with
-    | @EcallRun m1 m2 fn f vargs vargs' s0 s1 s2 vres vres' Hget Hca Hi Hw Hsem Hex Hvres Hcr Hfi=>
-       @Hproc m1 m2 fn f vargs vargs' s0 s1 s2 vres vres' Hget Hca Hi Hw Hsem (sem_Ind Hsem)
-              (fun s1' heq => 
-                 match Hex s1' heq with
-                 | ex_intro s2' (conj h1 h2) => 
-                   ex_intro _ s2' (And3 h1 h2 (sem_Ind h1))
-                 end)
-              Hvres Hcr Hfi
+    | @EcallRun m1 m2 fn f vargs vargs' s0 s1 s2 vres vres' Hget Hca Hi Hw Hsem Hvres Hcr Hfi=>
+       @Hproc m1 m2 fn f vargs vargs' s0 s1 s2 vres vres' Hget Hca Hi Hw Hsem (sem_Ind Hsem) Hvres Hcr Hfi
     end.
 
 End SEM_IND.
@@ -2518,26 +2498,14 @@ Qed.
 
 Local Lemma Hproc : sem_Ind_proc p ev Pc Pfun.
 Proof.
-  move=> m1 m2 fn fd vargs vargs' s0 s1 s2 vres vres' Hget Hca hi Hargs Hsem Hrec Hrec' Hmap Hcr Hfi vargs1' Uargs.
+  move=> m1 m2 fn fd vargs vargs' s0 s1 s2 vres vres' Hget Hca hi Hargs Hsem Hrec Hmap Hcr Hfi vargs1' Uargs.
   have [vargs2' hm2 Uargs']:= mapM2_truncate_val Hca Uargs.
   have := write_vars_uincl (vm_uincl_refl _) Uargs' Hargs.
   rewrite with_vm_same => -[vm1 Hargs' Hvm1].
   have [vm2' /= [] Hsem' Uvm2]:= Hrec _ Hvm1.
   have [vs2 Hvs2 Hsub] := get_vars_uincl Uvm2 Hmap.
   have [vres2' hmr2 Ures']:= mapM2_truncate_val Hcr Hsub.
-  exists vres2';split=>//;econstructor;eauto.
-Print Pc.
-  move=> /= m1' /Hrec' [] m2' [] ?? h; exists m2'; split => //.
-  case: (h vm1 Hvm1) => vm2 [].
-  case: (s1) (s2) => ?? [] //=.
-rewrite /=.
-Search _ with_mem with_vm.   
-
-hs1'.
-  case := Hrec' (with_vm s1' vm1).
-
-/@Hrec'. [].
- ? [] ; eauto.
+  by exists vres2';split=>//;econstructor;eauto.
 Qed.
 
 Lemma sem_call_uincl vargs m1 f m2 vres vargs':
@@ -2713,8 +2681,7 @@ Qed.
 
 Instance sCP_unit : @semCallParams _ progUnit := 
   {| init_state := fun _ _ _ s => ok s;
-     finalize   := fun _ m => m;
-     equiv_mem  := fun _ m1 m2 => m1 = m2 |}.
+     finalize   := fun _ m => m; |}.
 
 (* ** Semantic with stack 
  * -------------------------------------------------------------------- *)
@@ -2733,11 +2700,7 @@ Definition finalize_stk_mem (sf : stk_fun_extra) (m:mem) :=
 
 Instance sCP_stack : @semCallParams _ progStack :=
   {| init_state := init_stk_state;
-     finalize   := finalize_stk_mem;
-     equiv_mem  := fun m m1 m2 => 
-                     stack_stable m1 m2 /\
-                     (forall p, valid_pointer m p U8 -> read_mem m1 p U8 = read_mem m2 p U8)
- |}.
+     finalize   := finalize_stk_mem; |}.
 
 (* -------------------------------------------------------------------- *)
 
