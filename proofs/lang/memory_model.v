@@ -528,7 +528,7 @@ Parameter valid_pointerP : ∀ m p ws,
 Parameter read_write_any_mem :
   forall m1 m1' pr szr pw szw vw m2 m2',
     valid_pointer m1 pr szr ->
-    read_mem m1 pr szr = read_mem m1' pr szr ->
+    (∀ (w : pointer) (sz : wsize), valid_pointer m1 w sz → read_mem m1 w sz = read_mem m1' w sz) ->
     write_mem m1 pw szw vw = ok m2 ->
     write_mem m1' pw szw vw = ok m2' ->
     read_mem m2 pr szr = read_mem m2' pr szr.
