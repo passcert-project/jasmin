@@ -284,13 +284,20 @@ Module MemoryI : MemoryT.
     by split => h i hi; apply h; move: hi; rewrite in_ziota !zify Z.add_0_l.
   Qed.
 
+  Lemma is_initE m p ws : 
+    is_init m p ws = all (fun i => is_init m (add p i) U8) (ziota 0 (wsize_size ws)).
+  Proof.
+    by rewrite /is_init /=; apply eq_in_all => ??; rewrite add_0 andbT.
+  Qed.
+   
   Lemma is_initP m p ws :
     reflect (forall i, 0 <= i < wsize_size ws -> is_init m (add p i) U8) 
             (is_init m p ws).
   Proof.
+    rewrite is_initE.
     apply: equivP; first by apply allP.
     split => h i hi.
-    + by rewrite /is_init /= add_0 h // in_ziota !zify.
+    + by rewrite h // in_ziota !zify.
     by move: (h i) hi; rewrite in_ziota !zify Z.add_0_l /= add_0 => h1 /h1 [].
   Qed.
 
@@ -460,21 +467,33 @@ Module MemoryI : MemoryT.
   Definition top_stack (m:mem) :=
     add m.(stk_root) (- footprint_of_stack m.(frames)).
 
+  Definition set_alloc_aux T b (m:Mz.t T) (ptr sz:Z) :=
+    foldl (fun m k => if b is Some t then Mz.set m k t else Mz.remove m k) m (ziota ptr sz).
+
   Definition set_alloc b (m:Mz.t unit) (ptr sz:Z) :=
-    foldl (fun m k => if b then Mz.set m k tt else Mz.remove m k) m (ziota ptr sz).
+    set_alloc_aux (if b then Some tt else None) m ptr sz.
 
   Definition clear_data (m:Mz.t u8) (ptr sz:Z) :=
-    foldl (fun m k => Mz.remove m k) m (ziota ptr sz).
+    set_alloc_aux None m ptr sz.
+
+  Lemma set_alloc_auxP (T:eqType) (b:option T) m p sz x :
+    Mz.get (set_alloc_aux b m p sz) x =
+      if (p <=? x) && (x <? p + sz) then b else Mz.get m x.
+  Proof.
+    rewrite /set_alloc_aux -in_ziota; elim: ziota m => //= i l hrec m.
+    rewrite in_cons hrec orbC; case: {hrec} b => [t | ];
+    by case: ifP => //= ?;rewrite /is_zalloc (Mz.setP, Mz.removeP) eq_sym; case: ifP.
+  Qed.
 
   Lemma set_allocP b m p sz x :
     is_zalloc (set_alloc b m p sz) x =
       if (p <=? x) && (x <? p + sz) then b else is_zalloc m x.
-  Proof.
-    rewrite /set_alloc -in_ziota; elim: ziota m => //= i l hrec m.
-    rewrite in_cons hrec orbC; case: ifP => //= ?.
-    by rewrite /is_zalloc; case: {hrec} b;
-      rewrite (Mz.setP, Mz.removeP) eq_sym; case: ifP.
-  Qed.
+  Proof. by rewrite /is_zalloc set_alloc_auxP; case: ifP => //; case: b. Qed.
+
+  Lemma clear_dataP m p sz x :
+    is_zalloc (clear_data m p sz) x =
+      is_zalloc m x && ~~((p <=? x) && (x <? p + sz)).
+  Proof. by rewrite /is_zalloc set_alloc_auxP; case: ifP; rewrite /= (andbT, andbF). Qed.
 
   (** Stack blocks: association list of frame pointers to frame sizes (data only) *)
   Definition stack_blocks_rec stk_root (frames: seq frame) :=
@@ -893,8 +912,7 @@ Module MemoryI : MemoryT.
     rewrite is_align8 /= /is_alloc /top_stack /= !andbT add_0.
     case/andP: h.
     set fr := {| frame_size := sz |} => ok_f /lezP no_ovf.
-    rewrite set_allocP.
-    rewrite /between.
+    rewrite set_allocP /between.
     have b_pos := wunsigned_range m.(stk_root).
     have l_pos := wunsigned_range m.(stk_limit).
     have f_pos := footprint_of_stack_pos m.
@@ -902,6 +920,48 @@ Module MemoryI : MemoryT.
     rewrite wunsigned_add; last Psatz.lia.
     rewrite Zleb_succ.
     by case: ifP => _; rewrite (orbT, orbF).
+  Qed.
+
+  Lemma ass_fresh m ws_stk sz sz' m' :
+    alloc_stack m ws_stk sz sz' = ok m' →
+    ∀ p s,
+      valid_pointer m p s →
+      (wunsigned p + wsize_size s <= wunsigned (top_stack m') ∨ wunsigned (top_stack m') + sz <= wunsigned p).
+  Proof.
+    move => X; have := m.(stk_freeP); move: X.
+    rewrite /alloc_stack; case: Sumbool.sumbool_of_bool => // h [<-] /= stk_fresh p s /andP[] p_align p_alloc.
+    rewrite /top_stack /=.
+    right. apply/lezP; case: lezP => // /Z.nle_gt X.
+    rewrite -(stk_fresh (wunsigned p)).
+    - by move/allP: p_alloc => /(_ 0); rewrite in_ziota /= (proj2 (Z.ltb_lt _ _) (wsize_size_pos s)) add_0 => /(_ erefl).
+    split. apply wunsigned_range.
+    apply: (Z.lt_le_trans _ _ _ X).
+    clear X.
+    case/andP: h => ok_f /lezP ovf.
+    have rt_range := wunsigned_range (stk_root m).
+    have l_range := wunsigned_range (stk_limit m).
+    have {ok_f}/= := frame_size_in_footprint ok_f.
+    move: (footprint_of_frame _) ovf => fr ovf fr_pos.
+    have /andP[/footprint_of_valid_frames ok_s _] := framesP m.
+    rewrite wunsigned_add; Psatz.lia.
+  Qed.
+
+  Lemma ass_init m ws_stk sz sz' m' : 
+    alloc_stack m ws_stk sz sz' = ok m' →
+    ∀ p,
+     is_init m' p U8 = is_init m p U8 && ~~between (top_stack m') sz p U8.
+  Proof.
+    rewrite /alloc_stack; case: Sumbool.sumbool_of_bool => // h [<-] p.
+    rewrite /= /is_init /top_stack /= !andbT add_0.
+    case/andP: h.
+    set fr := {| frame_size := sz |} => ok_f /lezP no_ovf.
+    rewrite clear_dataP /between.
+    have b_pos := wunsigned_range m.(stk_root).
+    have l_pos := wunsigned_range m.(stk_limit).
+    have f_pos := footprint_of_stack_pos m.
+    have s_pos := footprint_of_valid_frame ok_f.
+    rewrite wunsigned_add; last Psatz.lia.
+    by rewrite Zleb_succ.
   Qed.
 
   Lemma ass_read_old m ws_stk sz sz' m' :
@@ -915,11 +975,29 @@ Module MemoryI : MemoryT.
     + have /valid_pointerP[ al_p_s ok_m_p_s_i ] := ok_m_p_s.
       apply/valid_pointerP; apply: (conj al_p_s) => k /ok_m_p_s_i.
       by rewrite (ass_valid ok_m') => ->.
-    move: ok_m'.
+    have hadd : forall k, 0 <= k < wsize_size s -> wunsigned (add p k) = wunsigned p + k.
+    + by move=> k hk; move /valid_pointerP: ok_m_p_s => []/is_align_wunsigned_add -/(_ _ hk).
+    have hfresh := ass_fresh ok_m' ok_m_p_s.
+    have : is_init m p s = is_init m' p s.
+    + rewrite !is_initE; apply eq_in_all => k; rewrite in_ziota !zify => hk.
+      rewrite (ass_init ok_m').
+      have -> : ~~ between (top_stack m') sz (add p k) U8; last by rewrite andbT.
+      by rewrite /between !zify wsize8 hadd //; Psatz.lia.
+    move: ok_m' hfresh.
     rewrite /alloc_stack; case: Sumbool.sumbool_of_bool => // h [<-].
-    rewrite /read_mem /CoreMem.read /= /CoreMem.uread /= /validr.
-(* ok_m_p_s => ->. *)
-  Admitted.
+    rewrite /read_mem /CoreMem.read /= /CoreMem.uread /= /validr /validrb ok_m_p_s /top_stack.
+    move => /= hfresh <- -> /=.
+    case heq: is_init => //=; do 2!f_equal; apply eq_map_ziota => i hi /=.
+    rewrite /uget /= /clear_data set_alloc_auxP.
+    case: ifP => //.
+    case/andP: h hfresh.
+    set fr := {| frame_size := sz |} => ok_f /lezP no_ovf.
+    have b_pos := wunsigned_range m.(stk_root).
+    have l_pos := wunsigned_range m.(stk_limit).
+    have f_pos := footprint_of_stack_pos m.
+    have s_pos := footprint_of_valid_frame ok_f.
+    rewrite (hadd _ hi) !zify wunsigned_add; Psatz.lia.
+  Qed.
 
   Lemma ass_read_new m ws_stk sz sz' m' :
     alloc_stack m ws_stk sz sz' = ok m' →
@@ -927,7 +1005,11 @@ Module MemoryI : MemoryT.
     ~valid_pointer m p U8 → valid_pointer m' p U8 →
     read_mem m' p U8 = Error ErrAddrInvalid.
   Proof.
-  Admitted.
+    move=> ha p.
+    rewrite (ass_valid ha) => /negP /negbTE -> /=.
+    rewrite readP /CoreMem.read /= /validr /validrb (ass_init ha) => ->.
+    by rewrite !andbF.
+  Qed.
 
   Lemma ass_align m ws_stk sz sz' m' :
     alloc_stack m ws_stk sz sz' = ok m' →
@@ -966,30 +1048,6 @@ Module MemoryI : MemoryT.
     have /ltzP := word.modulus_gt0 q.
     change 0%R with 0%Z.
     Psatz.nia.
-  Qed.
-
-  Lemma ass_fresh m ws_stk sz sz' m' :
-    alloc_stack m ws_stk sz sz' = ok m' →
-    ∀ p s,
-      valid_pointer m p s →
-      (wunsigned p + wsize_size s <= wunsigned (top_stack m') ∨ wunsigned (top_stack m') + sz <= wunsigned p).
-  Proof.
-    move => X; have := m.(stk_freeP); move: X.
-    rewrite /alloc_stack; case: Sumbool.sumbool_of_bool => // h [<-] /= stk_fresh p s /andP[] p_align p_alloc.
-    rewrite /top_stack /=.
-    right. apply/lezP; case: lezP => // /Z.nle_gt X.
-    rewrite -(stk_fresh (wunsigned p)).
-    - by move/allP: p_alloc => /(_ 0); rewrite in_ziota /= (proj2 (Z.ltb_lt _ _) (wsize_size_pos s)) add_0 => /(_ erefl).
-    split. apply wunsigned_range.
-    apply: (Z.lt_le_trans _ _ _ X).
-    clear X.
-    case/andP: h => ok_f /lezP ovf.
-    have rt_range := wunsigned_range (stk_root m).
-    have l_range := wunsigned_range (stk_limit m).
-    have {ok_f}/= := frame_size_in_footprint ok_f.
-    move: (footprint_of_frame _) ovf => fr ovf fr_pos.
-    have /andP[/footprint_of_valid_frames ok_s _] := framesP m.
-    rewrite wunsigned_add; Psatz.lia.
   Qed.
 
   Lemma ass_root m ws_stk sz sz' m' :
