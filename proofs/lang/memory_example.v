@@ -284,14 +284,14 @@ Module MemoryI : MemoryT.
     by split => h i hi; apply h; move: hi; rewrite in_ziota !zify Z.add_0_l.
   Qed.
 
-  Lemma is_initE m p ws : 
+  Lemma is_initE m p ws :
     is_init m p ws = all (fun i => is_init m (add p i) U8) (ziota 0 (wsize_size ws)).
   Proof.
     by rewrite /is_init /=; apply eq_in_all => ??; rewrite add_0 andbT.
   Qed.
-   
+
   Lemma is_initP m p ws :
-    reflect (forall i, 0 <= i < wsize_size ws -> is_init m (add p i) U8) 
+    reflect (forall i, 0 <= i < wsize_size ws -> is_init m (add p i) U8)
             (is_init m p ws).
   Proof.
     rewrite is_initE.
@@ -320,9 +320,9 @@ Module MemoryI : MemoryT.
   Definition validw m p ws := assert (valid_pointer m p ws) ErrAddrInvalid.
 
   Definition validrb m p ws := valid_pointer m p ws && is_init m p ws.
-  
+
   Definition validr m p ws := assert (validrb m p ws) ErrAddrInvalid.
-  
+
   Lemma is_align_wunsigned_add ptr ws i :
     is_align ptr ws →
     0 <= i < wsize_size ws →
@@ -371,7 +371,7 @@ Module MemoryI : MemoryT.
   Qed.
 
   Lemma validrbE m p ws :
-    validrb m p ws = 
+    validrb m p ws =
      is_align p ws && (all (fun k => validrb m (p + wrepr U64 k) U8) (ziota 0 (wsize_size ws))).
   Proof.
     apply (sameP (validrbP m p ws)); apply: (iffP andP) => -[].
@@ -386,7 +386,7 @@ Module MemoryI : MemoryT.
   Proof.
     by rewrite /validr => /assertP /validrbP [] _ h /h ->; case: t.
   Qed.
- 
+
   Lemma validw_validr m p s i v t k:
     validw m p s = ok t ->
     0 <= i < wsize_size s ->
@@ -725,7 +725,7 @@ Module MemoryI : MemoryT.
   Lemma read_mem_error m p s e: read_mem m p s = Error e -> e = ErrAddrInvalid.
   Proof.
     rewrite /read_mem /CoreMem.read /= /validr /validrb; case: valid_pointer => [/=|[<-]//].
-    by case: is_init => //= -[] ->.    
+    by case: is_init => //= -[] ->.
   Qed.
 
   Lemma write_read8 m m' p ws (v: word ws) k :
@@ -773,7 +773,7 @@ Module MemoryI : MemoryT.
 
   Lemma write_mem_zget m p s (v : word s) m' k :
     write_mem m p v = ok m' ->
-    Mz.get (data m') (wunsigned k) = 
+    Mz.get (data m') (wunsigned k) =
       (let i := sub k p in
             if (0 <=? i) && (i <? wsize_size s) then Some (LE.wread8 v i) else Mz.get (data m) (wunsigned k)).
   Proof.
@@ -783,7 +783,7 @@ Module MemoryI : MemoryT.
     rewrite Z.add_0_l => <-.
     rewrite /CoreMem.uwrite /=.
     have : ∀ z : Z, z \in ziota 0 (wsize_size s) → sub (add p z) p = z.
-    + by move=> z; rewrite in_ziota Z.add_0_l !zify; apply hsa. 
+    + by move=> z; rewrite in_ziota Z.add_0_l !zify; apply hsa.
     elim: (ziota _ _) m => //= {hsa}.
     move=> j l hrec m hsa; rewrite hrec; last first.
     + by move=> z h; apply /hsa; rewrite in_cons h orbT.
@@ -795,9 +795,9 @@ Module MemoryI : MemoryT.
     by rewrite /i hsa // mem_head.
   Qed.
 
-  Lemma write_mem_init_def m m' p s (v : word s) k : 
-     write_mem m p v = ok m' -> 
-     is_init m' k U8 = 
+  Lemma write_mem_init_def m m' p s (v : word s) k :
+     write_mem m p v = ok m' ->
+     is_init m' k U8 =
         (let i := sub k p in
          (0 <=? i) && (i <? wsize_size s) || is_init m k U8).
   Proof.
@@ -860,7 +860,7 @@ Module MemoryI : MemoryT.
     + move=> k hk; case /valid_pointerP : hv => ? /(_ k hk) /hr.
       rewrite /read_mem /CoreMem.read /= /validr.
       by case: validrb; case: validrb.
-    have <- : validrb (CoreMem.uwrite m1 pw vw) pr szr = 
+    have <- : validrb (CoreMem.uwrite m1 pw vw) pr szr =
               validrb (CoreMem.uwrite m1' pw vw) pr szr.
     + rewrite !validrbE; f_equal; apply eq_in_all => k; rewrite in_ziota !zify => hk.
       have := (CoreMem.uwrite_validr8 vw (pr + wrepr U64 k)%R hvw).
@@ -876,7 +876,7 @@ Module MemoryI : MemoryT.
     rewrite /read_mem /CoreMem.read /= -(hvk _ hk).
     rewrite !CoreMem.uread8_get.
     rewrite /validr /validrb hvpk /=.
-    have := hi1 _ hk; rewrite hi // -addP. 
+    have := hi1 _ hk; rewrite hi // -addP.
     by (case heq: is_init => // /=; rewrite ?(orbT, orbF)) => [ _ [] | ] ->.
   Qed.
 
@@ -937,7 +937,7 @@ Module MemoryI : MemoryT.
     rewrite wunsigned_add; Psatz.lia.
   Qed.
 
-  Lemma ass_init m ws_stk sz sz' m' : 
+  Lemma ass_init m ws_stk sz sz' m' :
     alloc_stack m ws_stk sz sz' = ok m' →
     ∀ p,
      is_init m' p U8 = is_init m p U8 && ~~between (top_stack m') sz p U8.
