@@ -1375,3 +1375,12 @@ Proof.
   have ? := pow2pos (wsize_log2 sz').
   elim_div; Psatz.lia.
 Qed.
+
+Lemma align_wordE sz sz' (p: word sz) :
+  wunsigned (align_word sz' p) = wunsigned p - (wunsigned p mod wsize_size sz').
+Proof.
+  have nz := wsize_size_pos sz'.
+  rewrite {1}(Z.div_mod (wunsigned p) (wsize_size sz')); last lia.
+  rewrite /align_word wsize_size_is_pow2 wand_align.
+  lia.
+Qed.
