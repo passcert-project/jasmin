@@ -842,15 +842,6 @@ Module MemoryI : MemoryT.
     rewrite !wunsigned_add; Psatz.lia.
   Qed.
 
-  Lemma eq_mapM eT (aT:eqType) bT (f1 f2: aT -> result eT bT) (l:list aT) :
-   (forall a, a \in l -> f1 a = f2 a) ->
-    mapM f1 l = mapM f2 l. 
-  Proof.
-    elim: l => //= a l hrec hf; rewrite hf ? hrec //.
-    + by move=> ? h; apply/hf; rewrite in_cons h orbT.
-    by apply mem_head.
-  Qed. 
-
   Lemma read_write_any_mem m1 m1' pr szr pw szw (vw:word szw) m2 m2':
     valid_pointer m1 pr szr ->
     (∀ (w : pointer) (sz : wsize), valid_pointer m1 w sz → read_mem m1 w sz = read_mem m1' w sz) ->

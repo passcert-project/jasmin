@@ -248,6 +248,15 @@ move => f g ext xs xs' <-{xs'}.
 by elim: xs => //= a xs ->; rewrite (ext a); case: (g a).
 Qed.
 
+Lemma eq_mapM eT (aT: eqType) bT (f1 f2: aT -> result eT bT) (l:list aT) :
+  (forall a, a \in l -> f1 a = f2 a) ->
+  mapM f1 l = mapM f2 l.
+Proof.
+  elim: l => //= a l hrec hf; rewrite hf ? hrec //.
+  + by move=> ? h; apply/hf; rewrite in_cons h orbT.
+  by apply mem_head.
+Qed.
+
 Lemma mapM_size eT aT bT f xs ys :
   @mapM eT aT bT f xs = ok ys ->
   size xs = size ys.
