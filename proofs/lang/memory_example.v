@@ -1155,8 +1155,30 @@ Module MemoryI : MemoryT.
     is_align p ws →
     top_stack_after_alloc p ws sz = (p + wrepr Uptr (- round_ws ws sz))%R.
   Proof.
-    rewrite /top_stack_after_alloc /is_align /do_align /=.
-  Admitted.
+    rewrite /top_stack_after_alloc /is_align /do_align /= => /eqP => hmod.
+    rewrite -(wrepr_unsigned (align_word _ _)) !wrepr_opp align_wordE.
+    have hlt : wsize_size ws > 0.
+    + by have := wsize_size_pos ws. 
+    have hmm : forall k, k mod wbase U64 mod wsize_size ws = k mod wsize_size ws.
+    + move=> k; rewrite -Znumtheory.Zmod_div_mod //.
+      by apply Znumtheory.Zmod_divide => //; case: (ws).
+    rewrite wrepr_sub wrepr_unsigned.
+    rewrite -{2}(wrepr_unsigned p) -{2}(wrepr_unsigned (wrepr _ _)) -wrepr_sub wunsigned_repr hmm.
+    set sz' := wunsigned (wrepr U64 sz).
+    have -> : (wunsigned p - sz') mod wsize_size ws = (-sz') mod wsize_size ws.
+    + by rewrite (Z_div_mod_eq (wunsigned p) _ hlt) hmod Z.add_0_r /Z.sub 
+       Z.add_comm Z.mul_comm Z_mod_plus_full.
+    have -> : (-sz') mod wsize_size ws = 
+       if sz' mod wsize_size ws == 0 then 0 else wsize_size ws - sz' mod wsize_size ws.
+    + case: eqP; first by apply Z_mod_zero_opp_full.
+      by apply Z_mod_nz_opp_full.
+    rewrite /sz' wunsigned_repr hmm.
+    have := Z_div_mod sz (wsize_size ws) hlt.
+    rewrite /round_ws /Z.modulo.
+    case: Z.div_eucl => q r [-> ] ?; case: eqP => [ -> | ?].
+    + by rewrite wrepr0 GRing.subr0. 
+    rewrite -GRing.addrA -GRing.opprB GRing.opprK -wrepr_add; do 3!f_equal; ring.
+  Qed.
 
   Lemma alloc_stack_complete m ws sz sz' :
     let: old_size:= sub (stack_root m) (memory_model.top_stack m) in
@@ -1182,14 +1204,14 @@ Module MemoryI : MemoryT.
     rewrite -/(top_stack_after_alloc (top_stack m) ws (sz + sz')).
     case: ifPn no_overflow => top_align; rewrite zify => no_overflow.
     { (* old top stack is aligned for ws *)
-      rewrite top_stack_after_aligned_alloc //.
       have size_big := @round_ws_range ws (sz + sz').
       have size_small : 0 <= round_ws ws (sz + sz') <= wunsigned (top_stack m).
       - move: no_overflow; rewrite !subE.
         have := wunsigned_range (stk_limit m).
         Psatz.lia.
-      rewrite sub_add_small_R // subxx.
-      Psatz.lia. }
+      by rewrite top_stack_after_aligned_alloc //; 
+         first rewrite sub_add_small_R // subxx; Psatz.lia. 
+    }
     (* old top stack is not aligned *)
     split.
     { rewrite -Z.le_add_le_sub_r /=.
