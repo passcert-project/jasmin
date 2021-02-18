@@ -143,7 +143,7 @@ Section REMOVE_INIT.
     move => t1 ht1 vm1' hset <- Wf1; subst xt.
     exists vm1;split => //=; first by constructor.
     move=> z;have := Hvm1 z.  
-    move: hset; apply: set_varP => //= ? [<-] <-.
+    move: hset; apply: set_varP => //= ? <- <-.
     case: ({| vtype := sarr tlen; vname := xn |} =P z) => [<- _ | /eqP neq]; last by rewrite Fv.setP_neq.
     rewrite Fv.setP_eq; have := Wf1 {| vtype := sarr tlen; vname := xn |}.
     move: hg; rewrite /get_var /on_vu /=. set x := {| vtype := _|}.
