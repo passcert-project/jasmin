@@ -1070,26 +1070,35 @@ Proof.
   by move=> hi;rewrite (nth_map O) ?size_iota // nth_iota.
 Qed.
 
+Lemma list_all_ind (Q : Z -> bool) (P : list Z -> Prop):
+  P [::] -> 
+  (forall i l, Q i -> all Q l -> P l -> P (i::l))->
+  (forall l, all Q l -> P l).
+Proof.
+  move=> hnil hcons; elim => //= a l hrec /andP [hQ hall].
+  by apply hcons => //; apply hrec.
+Qed.
+
+Lemma ziota_ind (P : list Z -> Prop) p1 p2:
+  P [::] -> 
+  (forall i l, p1 <= i < p1 + p2 -> P l -> P (i::l))->
+  P (ziota p1 p2).
+Proof.
+  move=> hnil hcons.
+  have: all (fun i =>  (p1 <=? i) && (i <? p1 + p2)) (ziota p1 p2).
+  + by apply/allP => i; rewrite in_ziota !zify.
+  by elim/list_all_ind => // i l; rewrite !zify => *;apply hcons.
+Qed.
+  
 Lemma eq_map_ziota (T:Type) p1 p2 (f1 f2: Z -> T) :
   (forall i, (p1 <= i < p1 + p2)%Z -> f1 i = f2 i) ->
   map f1 (ziota p1 p2) = map f2 (ziota p1 p2).
-Proof.
-  move=> hi; have {hi}: (forall i, i \in ziota p1 p2 -> f1 i = f2 i).
-  + move=> ?; rewrite in_ziota !zify; apply hi.
-  elim: ziota => //= i l hrec hf; rewrite hrec;first by rewrite hf ?mem_head.
-  by move=> ? hin; apply hf;rewrite in_cons hin orbT.
-Qed.
+Proof. by move=> h; apply ziota_ind => //= i l /h -> ->. Qed.
 
 Lemma all_ziota p1 p2 (f1 f2: Z -> bool) :
   (forall i, (p1 <= i < p1 + p2)%Z -> f1 i = f2 i) ->
   all f1 (ziota p1 p2) = all f2 (ziota p1 p2).
-Proof.
-  move=> hi; have {hi}: (forall i, i \in ziota p1 p2 -> f1 i = f2 i).
-  + move=> ?; rewrite in_ziota !zify; apply hi.
-  elim: ziota => //= i l hrec hf; rewrite hrec;first by rewrite hf ?mem_head.
-  by move=> ? hin; apply hf;rewrite in_cons hin orbT.
-Qed.
-
+Proof. by move => h; apply ziota_ind => //= i l /h -> ->. Qed.
 
 (* ------------------------------------------------------------------------- *)
 Lemma sumbool_of_boolET (b: bool) (h: b) :
