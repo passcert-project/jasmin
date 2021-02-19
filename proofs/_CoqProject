@@ -12,6 +12,7 @@ ssrmisc/oseq.v
 3rdparty/ssrring.v
 3rdparty/xseq.v
 compiler/allocation.v
+compiler/arch_decl.v
 compiler/array_expansion.v
 compiler/array_init.v
 compiler/array_init_proof.v
