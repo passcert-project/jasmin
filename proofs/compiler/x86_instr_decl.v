@@ -36,11 +36,11 @@ Set   Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
-Require Import x86_decl.
+Require Import arch_decl x86_decl.
 
 (* -------------------------------------------------------------------- *)
 
-Variant asm_op : Type :=
+Variant x86_op : Type :=
   (* Data transfert *)
 | MOV    of wsize              (* copy *)
 | MOVSX  of wsize & wsize      (* sign-extend *)
@@ -837,14 +837,6 @@ Definition iCF := F CF.
 
 (* -------------------------------------------------------------------- *)
 
-Variant prim_constructor :=
-  | PrimP of wsize & (wsize -> asm_op)
-  | PrimM of asm_op
-  | PrimV of (velem -> wsize -> asm_op)
-  | PrimX of (wsize -> wsize -> asm_op)
-  | PrimVV of (velem → wsize → velem → wsize → asm_op)
-  .
-
 Variant arg_kind :=
   | CAcond
   | CAreg
@@ -863,7 +855,7 @@ Definition check_arg_kind (a:asm_arg) (cond: arg_kind) :=
   | Imm sz _, CAimm sz' => sz == sz'
   | Reg _, CAreg => true
   | Adr _, CAmem _ => true
-  | XMM _, CAxmm   => true
+  | XReg _, CAxmm   => true
   | _, _ => false
   end.
 
@@ -989,21 +981,8 @@ Definition max_32 (sz:wsize) := if (sz <= U32)%CMP then sz else U32.
 Definition omax_32 sz := Some (max_32 sz).
 Definition imm8 (sz:wsize) := Some U8.
 (* FIXME: if MOV u64 addr imm : the max size is u32 *)
-Definition primP op := PrimP U64 op.
+Definition primP (op:wsize -> x86_op) := PrimP U64 op.
 
-(*
-Inductive pp_asm_op_ext :=
-  | PP_name
-  | PP_iname of wsize
-  | PP_iname2 of wsize & wsize
-  | PP_ct of asm_arg.
-
-Record pp_asm_op := {
-  pp_aop_name : string;
-  pp_aop_ext  : pp_asm_op_ext;
-  pp_aop_args : seq (wsize * asm_arg);
-}.
-*)
 Definition map_sz (sz:wsize) (a:asm_args) := List.map (fun a => (sz,a)) a.
 
 Definition pp_name name sz args :=
@@ -1428,11 +1407,11 @@ Definition Ox86_VPERMQ_instr :=
 (* AES instructions *)
 Definition mk_instr_aes2 jname aname constr x86_sem msb_flag :=
   mk_instr_pp jname (w2_ty U128 U128) (w_ty U128) [:: E 0; E 1] [:: E 0] msb_flag x86_sem
-         (check_xmm_xmmm U128) 2 U128 (imm8 U128) (PrimM constr) (pp_name_ty aname [::U128;U128]).
+         (check_xmm_xmmm U128) 2 U128 (imm8 U128) (@PrimM x86_op constr) (pp_name_ty aname [::U128;U128]).
 
 Definition mk_instr_aes3 jname aname constr x86_sem msb_flag :=
   mk_instr_pp jname (w2_ty U128 U128) (w_ty U128) [:: E 1; E 2] [:: E 0] msb_flag x86_sem
-         (check_xmm_xmm_xmmm U128) 3 U128 (imm8 U128) (PrimM constr) (pp_name_ty aname [::U128;U128;U128]).
+         (check_xmm_xmm_xmmm U128) 3 U128 (imm8 U128) (@PrimM x86_op constr) (pp_name_ty aname [::U128;U128;U128]).
 
 Definition Ox86_AESDEC_instr := 
   mk_instr_aes2 "AESDEC" "aesdec" AESDEC x86_AESDEC MSB_MERGE.
@@ -1478,7 +1457,7 @@ Definition Ox86_VAESKEYGENASSIST_instr :=
    (check_xmm_xmmm_imm8 U128) 3 U128 (imm8 U8) (PrimM VAESKEYGENASSIST) 
    (pp_name_ty "vaeskeygenassist" [::U128;U128;U8]).
 
-Definition instr_desc o : instr_desc_t :=
+Definition x86_instr_desc o : instr_desc_t :=
   match o with
   | MOV sz             => Ox86_MOV_instr.1 sz
   | MOVSX sz sz'       => Ox86_MOVSX_instr.1 sz sz'
@@ -1581,7 +1560,7 @@ Definition instr_desc o : instr_desc_t :=
 
 (* -------------------------------------------------------------------- *)
 
-Definition prim_string :=
+Definition x86_prim_string :=
  [::
    Ox86_MOV_instr.2;
    Ox86_MOVSX_instr.2;
@@ -1682,6 +1661,10 @@ Definition prim_string :=
    Ox86_VAESKEYGENASSIST_instr.2  
  ].
   
+Instance x86_op_decl : asm_op_decl x86_op := {
+   instr_desc := x86_instr_desc; 
+   prim_string := x86_prim_string;
+}.
   
   
   

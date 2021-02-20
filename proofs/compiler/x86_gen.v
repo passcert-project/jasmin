@@ -354,7 +354,7 @@ Local Notation rip := (mk_rip p.(lp_rip)).
 Definition get_arg_value (st: x86_mem) (a: asm_arg) : value :=
   match a with
   | Reg r => Vword (xreg st r)
-  | XMM r => Vword (xxreg st r)
+  | XReg r => Vword (xxreg st r)
   | Condt _ | Imm _ _ | Adr _ => Vundef sword64 (refl_equal _)
   end.
 
@@ -409,7 +409,7 @@ Lemma get_xreg_of_vars_uincl ii xs rs vm vs (rm: regmap) (xrm: xregmap) :
   mapM (xreg_of_var ii \o v_var) xs = ok rs →
   mapM (λ x : var_i, get_var vm x) xs = ok vs →
   List.Forall2 value_uincl vs 
-     (map (λ a, match a with Reg r => Vword (rm r) | XMM r => Vword (xrm r) | _ => undef_w U64 end) rs).
+     (map (λ a, match a with Reg r => Vword (rm r) | XReg r => Vword (xrm r) | _ => undef_w U64 end) rs).
 Proof.
 move => hr hxr; elim: xs rs vs.
 + by move => _ _ [<-] [<-]; constructor.

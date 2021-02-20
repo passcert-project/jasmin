@@ -8,6 +8,7 @@ Set Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
+(* FIXME ARM : This should be moved in arch_decl *)
 Definition string_of_register r :=
   match r with
   | RAX => "RAX"
@@ -297,6 +298,7 @@ Definition rflag_of_var ii (v: var) :=
   end.
 
 (* -------------------------------------------------------------------- *)
+(* FIXME ARM : this should be a field of arch_decl ? *)
 Definition assemble_cond ii (e: pexpr) : ciexec condt :=
   match e with
   | Pvar v =>
@@ -398,12 +400,13 @@ Proof.
 Qed.
 
 (* -------------------------------------------------------------------- *)
-Definition scale_of_z' ii (z:pointer) :=
-  match wunsigned z with
-  | 1 => ok Scale1
-  | 2 => ok Scale2
-  | 4 => ok Scale4
-  | 8 => ok Scale8
+(* FIXME: ARM this should be rewritten *)
+Definition scale_of_z' ii (z:pointer) : ciexec nat:=
+  match wunsigned z return ciexec nat with
+  | 1 => ok O
+  | 2 => ok 0.+1
+  | 4 => ok 1.+1
+  | 8 => ok 2.+1
   | _ => cierror ii (Cerr_assembler (AsmErr_string "invalid scale" None))
   end%Z.
 
@@ -447,7 +450,7 @@ Definition addr_of_xpexpr rip ii sz v e :=
   addr_of_pexpr rip ii sz (Papp2 (Oadd (Op_w sz)) (Plvar v) e).
 
 Definition xreg_of_var ii (x: var) : ciexec asm_arg :=
-  if xmm_register_of_var x is Some r then ok (XMM r)
+  if xmm_register_of_var x is Some r then ok (XReg r)
   else if register_of_var x is Some r then ok (Reg r)
   else cierror ii (Cerr_assembler (AsmErr_string "Not a (x)register" None)).
 

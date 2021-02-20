@@ -61,10 +61,10 @@ Axiom encode_label_dom : ∀ dom lbl, lbl \in dom → encode_label dom lbl ≠ N
 (* ==================================================================== *)
 
 Class arch_decl (register simd_register rflag:finType) (condt: eqType) := { 
-  string_of_register : register -> string;
+ (* string_of_register : register -> string;
   string_of_simd_register : simd_register -> string;
   string_of_rflag : rflag -> string;
-  string_of_condt : condt -> string;
+  string_of_condt : condt -> string;*)
 }.
 
 Section DECL.
@@ -204,7 +204,7 @@ Variant asm_arg : Type :=
   | Adr    of address
   | XReg   of simd_register_t.
 
-Notation asm_args := (seq asm_arg).
+Definition asm_args := (seq asm_arg).
 
 Variant implicite_arg : Type :=
   | IArflag of rflag_t
@@ -304,6 +304,19 @@ Record instr_desc_t := mk_instr_desc {
   id_safe     : seq safe_cond;
   id_wsize    : wsize;  (* ..... *)
   id_pp_asm   : asm_args -> pp_asm_op;
+}.
+
+Variant prim_constructor (asm_op:Type) :=
+  | PrimP of wsize & (wsize -> asm_op)
+  | PrimM of asm_op
+  | PrimV of (velem -> wsize -> asm_op)
+  | PrimX of (wsize -> wsize -> asm_op)
+  | PrimVV of (velem → wsize → velem → wsize → asm_op)
+  .
+
+Class asm_op_decl (asm_op:Type) := {
+   instr_desc : asm_op -> instr_desc_t;
+   prim_string : list (string * prim_constructor asm_op);
 }.
 
 End Section.

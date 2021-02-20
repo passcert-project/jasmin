@@ -28,7 +28,7 @@ From mathcomp Require Import all_ssreflect all_algebra.
 Require Import oseq.
 Require Export ZArith Setoid Morphisms.
 From CoqWord Require Import ssrZ.
-Require Export strings word utils type ident var global sem_type x86_decl x86_instr_decl.
+Require Export strings word utils type ident var global sem_type arch_decl x86_decl x86_instr_decl.
 Require Import xseq.
 Import Utf8 ZArith.
 
@@ -115,7 +115,7 @@ Variant sopn : Set :=
 | Oset0     of wsize  (* set register + flags to 0 (implemented using XOR x x or VPXOR x x) *)
 | Oconcat128          (* concatenate 2 128 bits word into 1 256 word register *)   
 | Ox86MOVZX32
-| Ox86      of asm_op  (* x86 instruction *)
+| Ox86      of x86_op  (* x86 instruction *)
 .
 
 Scheme Equality for sop1.
@@ -169,7 +169,7 @@ Definition sopn_eqMixin     := Equality.Mixin sopn_eq_axiom.
 Canonical  sopn_eqType      := Eval hnf in EqType sopn sopn_eqMixin.
 
 (* ----------------------------------------------------------------------------- *)
-
+(* FIXME ARM we should generalize this, the pb is for arg_desc *)
 Record instruction := mkInstruction {
   str      : unit -> string;
   tin      : list stype;

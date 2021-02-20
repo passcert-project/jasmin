@@ -37,7 +37,6 @@ Set   Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
-
 Variant asm : Type :=
 | ALIGN
 | LABEL of label
@@ -46,9 +45,10 @@ Variant asm : Type :=
 | JMP    of remote_label (* Direct jump *)
 | JMPI of asm_arg (* Indirect jump *)
 | Jcc    of label & condt  (* Conditional jump *)
-| AsmOp     of asm_op & asm_args.
+| AsmOp     of x86_op & asm_args.
 
 (* -------------------------------------------------------------------- *)
+(* FIXME ARM: This should be generalize *)
 Record xfundef := XFundef {
  xfd_align : wsize;
  xfd_nstk : register;
@@ -170,7 +170,10 @@ Definition st_get_rflag (rf : rflag) (s : x86_mem) :=
   if s.(xrf) rf is Def b then ok b else undef_error.
 
 (* -------------------------------------------------------------------- *)
-
+(* FIXME ARM: move this in arch_decl ? *)
+Definition word_of_scale (n:nat) : pointer := wrepr Uptr (2%Z^n)%R.
+  
+(* -------------------------------------------------------------------- *)
 Definition decode_reg_addr (s : x86_mem) (a : reg_address) : pointer := nosimpl (
   let: disp   := a.(ad_disp) in
   let: base   := odflt 0%R (Option.map (s.(xreg)) a.(ad_base)) in
@@ -207,7 +210,7 @@ Definition eval_asm_arg (s: x86_mem) (a: asm_arg) (ty: stype) : exec value :=
     | sword sz => Let w := read s.(xmem) (decode_addr s adr) sz in ok (Vword w)
     | _        => type_error
     end
-  | XMM x     => ok (Vword (s.(xxreg) x))
+  | XReg x     => ok (Vword (s.(xxreg) x))
   end.
 
 Definition eval_arg_in_v (s:x86_mem) (args:asm_args) (a:arg_desc) (ty:stype) : exec value :=
@@ -312,7 +315,7 @@ Definition mem_write_word (f:msb_flag) (s:x86_mem) (args:asm_args) (ad:arg_desc)
       match a with
       | Reg r     => ok (mem_write_reg r w s)
       | Adr adr   => mem_write_mem (decode_addr s adr) w s
-      | XMM x     => ok (mem_update_xreg f x w s)
+      | XReg x     => ok (mem_update_xreg f x w s)
       | _         => type_error
       end
     end
