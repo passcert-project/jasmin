@@ -60,30 +60,41 @@ Axiom encode_label_dom : ∀ dom lbl, lbl \in dom → encode_label dom lbl ≠ N
 
 (* ==================================================================== *)
 
-Class arch_decl (register simd_register rflag:finType) (condt: eqType) := { 
- (* string_of_register : register -> string;
-  string_of_simd_register : simd_register -> string;
-  string_of_rflag : rflag -> string;
-  string_of_condt : condt -> string;*)
+Class ToString (t:stype) (T:finType) := 
+  { category      : string               (* name of the "register" used to print error *) 
+  ; to_string     : T -> string
+  ; strings       : list (string * T)
+  ; inj_to_string : injective to_string
+  ; stringsE      : strings = [seq (to_string x, x) | x <- enum T]
+  }.
+
+(* ==================================================================== *)
+
+Class arch_decl (reg xreg rflag:finType) (condt: eqType) := 
+  { reg_size  : wsize
+  ; xreg_size : wsize
+  ; toS_r     :> ToString (sword reg_size) reg
+  ; toS_x     :> ToString (sword xreg_size) xreg
+  ; toS_f     :> ToString sbool rflag
 }.
 
 Section DECL.
   
-Context {register simd_register rflag:finType} {condt: eqType}.
-Context {arch : arch_decl register simd_register rflag condt}.
+Context {reg xreg rflag:finType} {condt: eqType}.
+Context {arch : arch_decl reg xreg rflag condt}.
 
-Definition register_t {_:arch_decl register simd_register rflag condt} := register.
-Definition simd_register_t {_:arch_decl register simd_register rflag condt} := simd_register.
-Definition rflag_t {_:arch_decl register simd_register rflag condt} := rflag.
-Definition cond_t {_:arch_decl register simd_register rflag condt} := condt.
+Definition reg_t   {_:arch_decl reg xreg rflag condt} := reg.
+Definition xreg_t  {_:arch_decl reg xreg rflag condt} := xreg.
+Definition rflag_t {_:arch_decl reg xreg rflag condt} := rflag.
+Definition cond_t  {_:arch_decl reg xreg rflag condt} := condt.
 
 (* -------------------------------------------------------------------- *)
 (* disp + base + scale × offset *)
 Record reg_address : Type := mkAddress {
   ad_disp   : pointer;
-  ad_base   : option register_t;
+  ad_base   : option reg_t;
   ad_scale  : nat;
-  ad_offset : option register_t;
+  ad_offset : option reg_t;
 }.
 
 Inductive address := 
@@ -125,15 +136,19 @@ Qed.
 Definition address_eqMixin := Equality.Mixin address_eq_axiom.
 Canonical address_eqType := EqType address address_eqMixin.
 
+Definition wreg  := sem_t (sword reg_size). 
+Definition wxreg := sem_t (sword xreg_size).
+
 End DECL.
 
+(* TODO ARM : move this in arch_sem *)
 Module RegMap. Section Section.
-  Context {register simd_register rflag:finType} {condt: eqType}.
-  Context {arch : arch_decl register simd_register rflag condt}.
+  Context {reg xreg rflag:finType} {condt: eqType}.
+  Context {arch : arch_decl reg xreg rflag condt}.
 
-  Definition map := {ffun register_t -> u64}.
+  Definition map := {ffun reg_t -> wreg}.
 
-  Definition set (m : map) (x : register_t) (y : u64) : map :=
+  Definition set (m : map) (x : reg_t) (y : wreg) : map :=
     [ffun z => if (z == x) then y else m z].
 
 End Section. End RegMap.
@@ -141,20 +156,20 @@ End Section. End RegMap.
 (* -------------------------------------------------------------------- *)
 
 Module XRegMap. Section Section.
-  Context {register simd_register rflag:finType} {condt: eqType}.
-  Context {arch : arch_decl register simd_register rflag condt}.
+  Context {reg xreg rflag:finType} {condt: eqType}.
+  Context {arch : arch_decl reg xreg rflag condt}.
 
-  Definition map := {ffun simd_register_t -> u256 }.
+  Definition map := {ffun xreg_t -> wxreg }.
 
-  Definition set (m : map) (x : simd_register_t) (y : u256) : map :=
+  Definition set (m : map) (x : xreg_t) (y : wxreg) : map :=
     [ffun z => if (z == x) then y else m z].
 End Section. End XRegMap.
 
 (* -------------------------------------------------------------------- *)
 
 Module RflagMap. Section Section.
-  Context {register simd_register rflag:finType} {condt: eqType}.
-  Context {arch : arch_decl register simd_register rflag condt}.
+  Context {reg xreg rflag:finType} {condt: eqType}.
+  Context {arch : arch_decl reg xreg rflag condt}.
 
   Variant rflagv := Def of bool | Undef.
 
@@ -194,27 +209,17 @@ Canonical rflagv_eqType := EqType _ rflagv_eqMixin.
 
 Section Section.
 
-Context {register simd_register rflag:finType} {condt: eqType}.
-Context {arch : arch_decl register simd_register rflag condt}.
+Context {reg xreg rflag:finType} {condt: eqType}.
+Context {arch : arch_decl reg xreg rflag condt}.
 
 Variant asm_arg : Type :=
   | Condt  of cond_t
   | Imm ws of word ws
-  | Reg    of register_t
+  | Reg    of reg_t
   | Adr    of address
-  | XReg   of simd_register_t.
+  | XReg   of xreg_t.
 
 Definition asm_args := (seq asm_arg).
-
-Variant implicite_arg : Type :=
-  | IArflag of rflag_t
-  | IAreg   of register_t.
-
-Variant arg_desc :=
-| ADImplicit  of implicite_arg
-| ADExplicit  of nat & option register_t.
-
-Definition E n := ADExplicit n None.
 
 Definition asm_arg_beq (a1 a2:asm_arg) :=
   match a1, a2 with
@@ -261,6 +266,20 @@ Canonical msb_flag_eqType := EqType msb_flag msb_flag_eqMixin.
 
 (* -------------------------------------------------------------------- *)
 
+Variant implicite_arg : Type :=
+  | IArflag of rflag_t     (* the string corresponding to the flag *)
+  | IAreg   of reg_t  (* the string corresponding to the flag *)
+  .
+
+Variant arg_desc :=
+| ADImplicit  of implicite_arg
+| ADExplicit  of nat & option reg_t. 
+
+Definition F  f   := ADImplicit (IArflag f).
+Definition R  r   := ADImplicit (IAreg   r).
+Definition E  n   := ADExplicit n None.
+Definition Ef n r := ADExplicit n (Some  r).
+
 Definition check_arg_dest (ad:arg_desc) (ty:stype) :=
   match ad with
   | ADImplicit _ => true
@@ -270,11 +289,11 @@ Definition check_arg_dest (ad:arg_desc) (ty:stype) :=
 Inductive pp_asm_op_ext :=
   | PP_error
   | PP_name
-  | PP_iname of wsize
-  | PP_iname2 of wsize & wsize
-  | PP_viname of velem & bool (* long *)
+  | PP_iname   of wsize
+  | PP_iname2  of wsize & wsize
+  | PP_viname  of velem & bool (* long *)
   | PP_viname2 of velem & velem (* source and target element sizes *)
-  | PP_ct of asm_arg.
+  | PP_ct      of asm_arg.
 
 Record pp_asm_op := mk_pp_asm_op {
   pp_aop_name : string;

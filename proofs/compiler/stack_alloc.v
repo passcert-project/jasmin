@@ -30,7 +30,6 @@ Require Import Coq.Logic.Eqdep_dec.
 Require Import strings word utils gen_map type var expr low_memory sem.
 Require Import constant_prop compiler_util allocation byteset.
 Require Import ZArith.
-Import x86_variables.
 
 Set Implicit Arguments.
 Unset Strict Implicit.
@@ -1183,8 +1182,8 @@ Definition init_params disj lmap rmap sao_params params :=
    
 Definition alloc_fd_aux p_extra mglob (local_alloc: funname -> stk_alloc_oracle_t) sao (f: _ufun_decl) : cfexec _ufundef :=
   let: (fn, fd) := f in
-  let vrip := {| vtype := sword Uptr; vname := p_extra.(sp_rip) |} in
-  let vrsp := var_of_register RSP in
+  let vrip := vid p_extra.(sp_rip) in 
+  let vrsp := vid p_extra.(sp_rsp) in
   Let mstk := init_local_map vrip vrsp fn mglob sao in
   let '(stack, locals, rmap, disj) := mstk in
   (* adding params to the map *)
@@ -1266,13 +1265,14 @@ Definition init_map (sz:Z) (l:list (var * wsize * Z)) : cexec (Mvar.t (Z*wsize))
   if (mp.2 <=? sz)%Z then cok mp.1
   else cerror "global size:please report".
 
-Definition alloc_prog rip global_data global_alloc local_alloc (P:_uprog) : cfexec _sprog :=
+Definition alloc_prog rip rsp global_data global_alloc local_alloc (P:_uprog) : cfexec _sprog :=
   Let mglob := add_err_msg (init_map (Z.of_nat (size global_data)) global_alloc) in
   let p_extra :=  {|
     sp_rip   := rip;
+    sp_rsp   := rsp;
     sp_globs := global_data;
   |} in
-  if rip == string_of_register RSP then Error (Ferr_msg (Cerr_stk_alloc "rip and rsp clash, please report"))
+  if rip == rsp then Error (Ferr_msg (Cerr_stk_alloc "rip and rsp clash, please report"))
   else if check_globs P.(p_globs) mglob global_data then
     Let p_funs := mapM (alloc_fd p_extra mglob local_alloc) P.(p_funcs) in
     ok  {| p_funcs  := p_funs;
@@ -1281,3 +1281,4 @@ Definition alloc_prog rip global_data global_alloc local_alloc (P:_uprog) : cfex
         |}
   else 
      Error (Ferr_msg (Cerr_stk_alloc "invalid data: please report")).
+

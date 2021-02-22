@@ -16,6 +16,7 @@ compiler/arch_decl.v
 compiler/array_expansion.v
 compiler/array_init.v
 compiler/array_init_proof.v
+compiler/asmexpr.v
 compiler/asmgen.v
 compiler/byteset.v
 compiler/compiler_util.v
@@ -29,6 +30,8 @@ compiler/dead_code.v
 compiler/dead_code_proof.v
 compiler/inline.v
 compiler/inline_proof.v
+compiler/lea.v
+compiler/lea_proof.v
 compiler/linear.v
 compiler/linear_sem.v
 compiler/linear_proof.v

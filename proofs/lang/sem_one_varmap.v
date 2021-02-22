@@ -5,7 +5,6 @@ Import Utf8.
 Import all_ssreflect.
 Import var.
 Import low_memory.
-Import x86_variables.
 
 Set Implicit Arguments.
 Unset Strict Implicit.
@@ -61,7 +60,7 @@ Proof.
 Qed.
 
 Let vgd : var := vid p.(p_extra).(sp_rip).
-Let vrsp : var := vid (string_of_register RSP).
+Let vrsp : var := vid p.(p_extra).(sp_rsp).
 
 Definition magic_variables : Sv.t :=
   Sv.add vgd (Sv.singleton vrsp).
@@ -135,7 +134,7 @@ with sem_call : instr_info → Sv.t → estate → funname → estate → Prop :
     get_fundef (p_funcs p) fn = Some f →
     match f.(f_extra).(sf_return_address) with
     | RAstack _ => extra_free_registers ii != None
-    | RAreg ra => (ra != vid p.(p_extra).(sp_rip)) && (ra != var_of_register RSP) && (~~ Sv.mem ra k)
+    | RAreg ra => (ra != vid p.(p_extra).(sp_rip)) && (ra != vrsp) && (~~ Sv.mem ra k)
     | RAnone => true
     end →
     (f.(f_extra).(sf_return_address) == RAnone) || is_align (top_stack s1.(emem)) f.(f_extra).(sf_align) →
@@ -212,7 +211,7 @@ Lemma sem_callE ii k s fn s' :
     (λ f _ _ _, get_fundef (p_funcs p) fn = Some f)
     (λ f _ _ k', match f.(f_extra).(sf_return_address) with
               | RAstack _ => extra_free_registers ii != None
-              | RAreg ra => (ra != vid p.(p_extra).(sp_rip)) && (ra != var_of_register RSP) && (~~ Sv.mem ra k')
+              | RAreg ra => (ra != vid p.(p_extra).(sp_rip)) && (ra != vrsp) && (~~ Sv.mem ra k')
               | RAnone => true
               end : bool)
     (λ f _ _ _, (f.(f_extra).(sf_return_address) == RAnone) || is_align (top_stack s.(emem)) f.(f_extra).(sf_align))
@@ -319,7 +318,7 @@ Section SEM_IND.
       get_fundef (p_funcs p) fn = Some fd →
       match fd.(f_extra).(sf_return_address) with
       | RAstack _ => extra_free_registers ii != None
-      | RAreg ra => (ra != vid p.(p_extra).(sp_rip)) && (ra != var_of_register RSP) && (~~ Sv.mem ra k)
+      | RAreg ra => (ra != vid p.(p_extra).(sp_rip)) && (ra != vrsp) && (~~ Sv.mem ra k)
       | RAnone => true
       end →
       (fd.(f_extra).(sf_return_address) == RAnone) || is_align (top_stack s1.(emem)) fd.(f_extra).(sf_align) →

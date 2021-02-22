@@ -27,12 +27,13 @@
 
 (* ** Imports and settings *)
 
+(* FIXME ARM : this need to be independant of x86 *)
 From mathcomp Require Import all_ssreflect all_algebra.
 Require Import ZArith.
 Require Import Utf8.
 Import Relations.
 
-Require Import expr compiler_util x86_variables.
+Require Import expr compiler_util asmexpr x86_variables.
 Import ssrZ.
 
 Set Implicit Arguments.
@@ -208,9 +209,9 @@ Section FUN.
 
 Context (fn: funname) (fn_align: wsize).
 
-Let rsp : var := var_of_register RSP.
+Let rsp : var    := vid p.(p_extra).(sp_rsp).
 Let rspi : var_i := VarI rsp xH.
-Let rspg : gvar := Gvar rspi Slocal.
+Let rspg : gvar  := Gvar rspi Slocal.
 
 (** Total size of a stack frame: local variables, extra and padding. *)
 Definition stack_frame_allocation_size (e: stk_fun_extra) : Z :=
@@ -227,7 +228,9 @@ Definition allocate_stack_frame (free: bool) (ii: instr_info) (sz: Z) : lcmd :=
           ])
     ].
 
-Definition eflags := Eval vm_compute in List.map (λ x, Lvar (VarI (var_of_flag x) xH)) [:: OF ; CF ; SF ; PF ; ZF ].
+(* FIXME ARM: this need to be indep of x86 *)
+Definition eflags := 
+ Eval vm_compute in List.map (λ x, Lvar (VarI (to_var x) xH)) [:: OF ; CF ; SF ; PF ; ZF ].
 
 Definition ensure_rsp_alignment ii (al: wsize) : linstr :=
   MkLI ii (Lopn (eflags ++ [:: Lvar rspi ]) (Ox86 (AND Uptr)) [:: Pvar rspg ; Papp1 (Oword_of_int Uptr) (Pconst (- wsize_size al)) ]).
@@ -355,7 +358,7 @@ Definition linear_fd (fd: sfundef) :=
           :: push_to_save xH e.(sf_to_save), (** FIXME: here to_save is always empty *)
           1%positive)
        | SavedStackStk ofs =>
-         let rax := VarI (var_of_register RAX) xH in
+         let rax := VarI (to_var RAX) xH in
          (pop_to_save xH e.(sf_to_save) ++ [:: MkLI xH (Lopn [:: Lvar rspi ] (Ox86 (MOV Uptr)) [:: Pload Uptr rspi (cast_const ofs) ]) ],
           [:: MkLI xH (Lopn [:: Lvar rax ] (Ox86 (MOV Uptr)) [:: Pvar rspg ] ) ]
           ++ allocate_stack_frame false xH (sf_stk_sz e + sf_stk_extra_sz e)

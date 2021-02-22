@@ -2056,8 +2056,8 @@ Definition alloc_ok (SP:sprog) fn m2 :=
   forall fd, get_fundef (p_funcs SP) fn = Some fd ->
   allocatable_stack m2 fd.(f_extra).(sf_stk_max).
 
-Lemma alloc_progP nrip data oracle_g oracle (P: uprog) (SP: sprog) fn:
-  alloc_prog nrip data oracle_g oracle P = ok SP ->
+Lemma alloc_progP nrip nrsp data oracle_g oracle (P: uprog) (SP: sprog) fn:
+  alloc_prog nrip nrsp data oracle_g oracle P = ok SP ->
   forall ev m1 va m1' vr rip, 
     sem_call (sCP := sCP_unit) P ev m1 fn va m1' vr ->
     forall m2, extend_mem m1 m2 rip SP.(p_extra).(sp_globs) ->

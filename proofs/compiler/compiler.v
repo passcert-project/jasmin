@@ -186,6 +186,7 @@ Definition compile_prog (entries subroutines : seq funname) (p: prog) :=
   let ao := cparams.(stackalloc) pl in
   Let ps :=
      stack_alloc.alloc_prog
+       (to_string RSP)  (* FIXME ARM *)
        cparams.(global_static_data_symbol) ao.(ao_globals) ao.(ao_global_alloc)
        ao.(ao_stack_alloc) pl in
   let ps : sprog := cparams.(print_sprog) StackAllocation ps in

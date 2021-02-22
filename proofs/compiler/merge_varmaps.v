@@ -1,10 +1,9 @@
 (*
 *)
-Require Import psem.
+Require Import psem compiler_util.
 Import Utf8.
 Import all_ssreflect.
 Import compiler_util.
-Import x86_variables.
 
 Set Implicit Arguments.
 Unset Strict Implicit.
@@ -202,7 +201,8 @@ Section CHECK.
     set_of_var_i_seq Sv.empty fd.(f_res).
 
   Definition magic_variables : Sv.t :=
-    Sv.add (vid p.(p_extra).(sp_rip)) (Sv.singleton (vid (string_of_register RSP))).
+    Sv.add (vid p.(p_extra).(sp_rip)) (Sv.singleton (vid p.(p_extra).(sp_rsp))).
+
 
   Definition check_fd (ffd: sfun_decl) :=
     let: (fn, fd) := ffd in
@@ -210,7 +210,7 @@ Section CHECK.
     Let I := add_finfo fn fn (check_cmd fd.(f_extra).(sf_align) fd.(f_body) O) in
     Let _ := assert (all (λ x : var_i, ~~ Sv.mem x magic_variables) fd.(f_params))
                     (Ferr_fun fn (Cerr_one_varmap "the function has RSP or global-data as parameter")) in
-    Let _ := assert (all (λ x : var_i, v_var x != vid (string_of_register RSP)) fd.(f_res))
+    Let _ := assert (all (λ x : var_i, v_var x != vid p.(p_extra).(sp_rsp)) fd.(f_res))
                     (Ferr_fun fn (Cerr_one_varmap "the functions returns RSP")) in
     let J := set_of_var_i_seq magic_variables fd.(f_params) in
     Let _ := assert (Sv.subset I J)
@@ -232,7 +232,7 @@ End CHECK.
 Definition check :=
   let wmap := mk_wmap in
   Let _ := assert (check_wmap wmap) (Ferr_msg (Cerr_one_varmap "invalid wmap")) in
-  Let _ := assert (p.(p_extra).(sp_rip) != string_of_register RSP) (Ferr_msg (Cerr_one_varmap "rip and rsp clash, please report")) in
+  Let _ := assert (p.(p_extra).(sp_rip) != p.(p_extra).(sp_rsp)) (Ferr_msg (Cerr_one_varmap "rip and rsp clash, please report")) in
   Let _ := check_prog (get_wmap wmap) in
   ok tt.
 

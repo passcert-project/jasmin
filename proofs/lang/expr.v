@@ -169,7 +169,7 @@ Definition sopn_eqMixin     := Equality.Mixin sopn_eq_axiom.
 Canonical  sopn_eqType      := Eval hnf in EqType sopn sopn_eqMixin.
 
 (* ----------------------------------------------------------------------------- *)
-(* FIXME ARM we should generalize this, the pb is for arg_desc *)
+
 Record instruction := mkInstruction {
   str      : unit -> string;
   tin      : list stype;
@@ -384,6 +384,8 @@ Qed.
 
 Definition v_scope_eqMixin     := Equality.Mixin v_scope_eq_axiom.
 Canonical  v_scope_eqType      := Eval hnf in EqType v_scope v_scope_eqMixin.
+
+Notation vid ident := {|v_var := {|vtype := sword Uptr; vname := ident|}; v_info := xH|}.
 
 Record gvar := Gvar { gv : var_i; gs : v_scope }.
 
@@ -1120,6 +1122,7 @@ Definition sfe_eqMixin   := Equality.Mixin sfe_eq_axiom.
 Canonical  sfe_eqType      := Eval hnf in EqType stk_fun_extra sfe_eqMixin.
 
 Record sprog_extra := { 
+  sp_rsp   : Ident.ident;                       
   sp_rip   : Ident.ident;
   sp_globs : seq u8;
 }.

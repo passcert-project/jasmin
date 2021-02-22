@@ -4,8 +4,7 @@ Require Import sem_one_varmap sem_one_varmap_facts merge_varmaps psem_facts.
 Import Utf8.
 Import all_ssreflect all_algebra.
 Import ssrZ.
-Import psem x86_variables.
-Import compiler_util.
+Import psem compiler_util.
 
 Set Implicit Arguments.
 Unset Strict Implicit.
@@ -18,12 +17,12 @@ Lemma vrvs_rec_set_of_var_i_seq acc xs :
 Proof. by elim: xs acc => // x xs ih acc; rewrite /= ih. Qed.
 
 Lemma init_stk_stateI fex pex gd s s' :
-  pex.(sp_rip) != string_of_register RSP →
+  pex.(sp_rip) != pex.(sp_rsp) →
   init_stk_state fex pex gd s = ok s' →
   [/\
     (evm s').[vid pex.(sp_rip)] = ok (pword_of_word gd),
     alloc_stack s.(emem) fex.(sf_align) fex.(sf_stk_sz) fex.(sf_stk_extra_sz) = ok (emem s') &
-    (evm s').[vid (string_of_register RSP)] = ok (pword_of_word (top_stack (emem s'))) ].
+    (evm s').[vid pex.(sp_rsp)] = ok (pword_of_word (top_stack (emem s'))) ].
 Proof.
   move => checked_sp_rip.
   apply: rbindP => m ok_m [<-] /=; split => //.
@@ -83,7 +82,7 @@ Qed.
 Hypothesis ok_p : check p extra_free_registers = ok tt.
 
 Let vgd : var := vid p.(p_extra).(sp_rip).
-Let vrsp : var := vid (string_of_register RSP).
+Let vrsp : var := vid p.(p_extra).(sp_rsp).
 
 Lemma vgd_neq_vrsp : vgd != vrsp.
 Proof. by move: ok_p; rewrite /check; t_xrbindP => _ _ __/assertP. Qed.
@@ -651,7 +650,7 @@ Section LEMMA.
     have ra_neq_magic : if sf_return_address (f_extra fd) is RAreg ra then (ra != vgd) && (ra != vrsp) else True.
     - case: sf_return_address checked_ra => // ra /andP[] /andP[] _ /negP; clear.
       rewrite /magic_variables /is_true Sv.mem_spec => ? _; apply/andP; split; apply/eqP; SvD.fsetdec.
-    set t1' := with_vm s0 (set_RSP (emem s0) (if sf_return_address (f_extra fd) is RAreg ra then tvm1.[ra <- undef_error] else tvm1)).
+    set t1' := with_vm s0 (set_RSP p (emem s0) (if sf_return_address (f_extra fd) is RAreg ra then tvm1.[ra <- undef_error] else tvm1)).
     have pre1 : merged_vmap_precondition (write_c (f_body fd)) (sf_align (f_extra fd)) (emem s1) (evm t1').
     - split.
       + apply: disjoint_w; last exact: preserved_magic.
@@ -708,7 +707,7 @@ Section LEMMA.
       by rewrite {1}/top_stack ok_free.(fss_frames) ok_free.(fss_root) -(sem_stack_stable sexec).(ss_root) -(sem_stack_stable sexec).(ss_frames) -(write_vars_emem ok_s1) ok_alloc.(ass_root) ok_alloc.(ass_frames).
     have [ t2 [ k texec hk ] sim2 ] := ih _ _ _ t1' checked_body pre1 sim1.
    have [ tres ok_tres res_uincl ] : exists2 tres,
-     mapM (λ x : var_i, get_var (set_RSP (free_stack (emem t2)) (evm t2)) x) (f_res fd) = ok tres
+     mapM (λ x : var_i, get_var (set_RSP p (free_stack (emem t2)) (evm t2)) x) (f_res fd) = ok tres
      & List.Forall2 value_uincl vres' tres.
    - move: ok_vres RSP_not_result (f_tyout fd) vres' ok_vres'.
      move: (mvm_vmap sim2); rewrite /live_after_fd; clear.
@@ -717,7 +716,7 @@ Section LEMMA.
      + by move => _ _ _ _ [] // _ [<-]; exists [::].
      move => x xs dom hvm y ok_y vs ok_vs ??; subst => /andP[] hx hxs [] // ty tys /=; t_xrbindP => _ w ok_w vres' ok_vres' <-.
      have {ih} [ tres -> /= res_uincl ] := ih _ _ hvm ok_vs hxs _ _ ok_vres'.
-     have ex : eval_uincl vm.[x] (set_RSP m vm').[x].
+     have ex : eval_uincl vm.[x] (set_RSP p m vm').[x].
      + rewrite /set_RSP Fv.setP_neq; last by rewrite eq_sym.
        apply: hvm.
        by rewrite -Sv.mem_spec mem_set_of_var_i_seq SvP.add_mem_1.
@@ -731,7 +730,7 @@ Section LEMMA.
        SvD.fsetdec.
      exists
        (Sv.union k (if fd.(f_extra).(sf_return_address) is RAreg ra then Sv.singleton ra else Sv.empty)),
-       (set_RSP (free_stack (emem t2)) (evm t2)), tres;
+       (set_RSP p (free_stack (emem t2)) (evm t2)), tres;
        split.
     - econstructor.
       + exact: ok_fd.

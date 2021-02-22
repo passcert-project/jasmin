@@ -1,7 +1,7 @@
 Require Import x86_sem linear_sem.
 Import Utf8 Relation_Operators.
 Import all_ssreflect all_algebra.
-Require Import compiler_util expr psem x86_sem linear x86_variables x86_variables_proofs asmgen.
+Require Import compiler_util expr psem x86_sem linear x86_variables x86_variables_proofs asmexpr asmgen.
 
 Set Implicit Arguments.
 Unset Strict Implicit.
@@ -27,7 +27,7 @@ Definition assemble_i rip (i: linstr) : ciexec asm :=
   | LstoreLabel x lbl =>
     let fail (msg: string) := cierror ii (Cerr_assembler (AsmErr_string ("store-label: " ++ msg) None)) in
     Let dst := match x with
-    | Lvar x => if register_of_var x is Some r then ok (Reg r) else fail "bad var"
+    | Lvar x => if of_var x is Some r then ok (Reg r) else fail "bad var"
     | Lmem _ _ _ => fail "set mem"
     | Laset _ _ _ _ => fail "set array"
     | Lasub _ _ _ _ _ => fail "sub array"
@@ -48,7 +48,7 @@ Definition assemble_c rip (lc: lcmd) : ciexec (seq asm) :=
 (* -------------------------------------------------------------------- *)
 Definition x86_gen_error (sp: register) : instr_error :=
   (xH, Cerr_assembler (AsmErr_string
-    ("Stack pointer (" ++ string_of_register sp ++ ") is also an argument")
+    ("Stack pointer (" ++ to_string sp ++ ") is also an argument")
     None)).
 
 (* -------------------------------------------------------------------- *)
@@ -67,7 +67,7 @@ Definition mk_rip name := {| vtype := sword Uptr; vname := name |}.
 
 Definition assemble_prog (p: lprog) : cfexec xprog :=
   let rip := mk_rip p.(lp_rip) in
-  Let _ := assert (register_of_var rip == None)
+  Let _ := assert (to_reg rip == None)
                     (Ferr_msg (Cerr_assembler ( AsmErr_string "Invalid RIP: please report" None))) in
   Let fds := map_cfprog (assemble_fd RSP rip) p.(lp_funcs) in
   ok {| xp_globs := p.(lp_globs); xp_funcs := fds |}
@@ -84,7 +84,7 @@ Proof.
   apply: rbindP => fds ok_fds [<-].
   split => //.
   split => r heq //.
-  by move: h; rewrite -heq register_of_var_of_register.
+  by move: h; rewrite -heq /to_reg to_varK.
 Qed.
 
 (* Assembling preserves labels *)
@@ -195,7 +195,7 @@ Qed.
 Lemma lom_eqv_write_var rip s xs (x: var_i) sz (w: word sz) s' r :
   lom_eqv rip s xs →
   write_var x (Vword w) s = ok s' →
-  var_of_register r = x →
+  to_var r = x →
   lom_eqv rip s' (mem_write_reg r w xs).
 Proof.
   case => eqm ok_rip [ dr dx df ] eqr eqx eqf.
@@ -207,18 +207,15 @@ Proof.
   3: exact: eqx.
   3: exact: eqf.
   - by move: dr => /(_ r) /eqP /negbTE ->.
-  rewrite /RegMap.set ffunE.
-  case: eqP (@var_of_register_inj r r') => h; last first.
-  - move => _; case: eqP => [ ? | _ ]; last exact: eqr.
-    by elim h; congr var_of_register.
-  move => /(_ h) ->; rewrite eqxx; t_xrbindP => /= w' ok_w' <- /=.
+  rewrite /RegMap.set ffunE eqtype.inj_eq; last by apply inj_to_var.
+  rewrite eq_sym; case: eqP => [<- | hne]; last by apply eqr.
+  t_xrbindP => /= w' ok_w' <- /=.
   rewrite /word_extend_reg.
   case: Sumbool.sumbool_of_bool ok_w' => le [] <-{w'} /=.
   - rewrite -{1}(zero_extend_u w).
     exact: word_uincl_ze_mw.
   apply: word_uincl_ze_mw => //.
-  clear -le.
-  by case: sz le.
+  by case: (sz) le.
 Qed.
 
 Lemma assemble_iP i j ls ls' lc xs :
@@ -274,7 +271,8 @@ case: i => ii [] /=.
   do 2 (eexists; first reflexivity).
   by constructor.
 - case => // x lbl.
-  case: (register_of_var _) (@var_of_register_of_var x) => //= r /(_ _ erefl) ok_r_x [<-]{j}.
+  assert (h := of_varI (tS:= toS_r) (v:=x)).
+  case: (of_var x) h => //= r /(_ _ erefl) ok_r_x [<-]{j}.
   rewrite eqfn.
   case ptr_eq: encode_label => [ ptr | ] //.
   replace (encode_label _ _) with (Some ptr);
@@ -377,7 +375,7 @@ apply: ih.
 + exact: ok_rs.
 2: exact: rec.
 case: h => h1 hrip hd h2 h3 h4 {ok_s3 ok_rs rec}.
-case: r ok_r hv => // r => [ /var_of_register_of_var | /xmm_register_of_varI ] rx /=.
+case: r ok_r hv => // r /of_varI rx /=.
 all: move: ok_s2; rewrite /write_var/set_var -rx /=; t_xrbindP => vm; apply: on_vuP => // w hw <-{vm} <-{s2}.
 all: constructor => //=; (only 2-4, 6-9: move => r' v'); rewrite /get_var /on_vu.
 1, 8: by rewrite Fv.setP_neq; first exact: hrip; apply/eqP; case: hd.
@@ -392,7 +390,7 @@ all: constructor => //=; (only 2-4, 6-9: move => r' v'); rewrite /get_var /on_vu
     case: Sumbool.sumbool_of_bool => hle //=.
     by apply word_uincl_zero_ext; apply cmp_nle_le; rewrite hle.
   move => hne; rewrite Fv.setP_neq; first exact: h2.
-  apply/eqP => /var_of_register_inj ?; exact: hne.
+  apply/eqP => /inj_to_var ?; exact: hne.
 case: (r =P r').
 * move => <-{r'}; rewrite Fv.setP_eq => -[<-]{v'}.
   apply: value_uincl_trans; last exact: h5.
@@ -400,12 +398,12 @@ case: (r =P r').
   case: Sumbool.sumbool_of_bool => hle //=.
   by apply word_uincl_zero_ext; apply cmp_nle_le; rewrite hle.
 move => hne; rewrite Fv.setP_neq; first exact: h3.
-apply/eqP => /var_of_xmm_register_inj ?; exact: hne.
+apply/eqP => /inj_to_var ?; exact: hne.
 Qed.
 
 Lemma get_xreg_of_vars_uincl ii xs rs vm vs (rm: regmap) (xrm: xregmap) :
-  (∀ r v, get_var vm (var_of_register r) = ok v → value_uincl v (Vword (rm r))) →
-  (∀ r v, get_var vm (var_of_xmm_register r) = ok v → value_uincl v (Vword (xrm r))) →
+  (∀ r v, get_var vm (to_var r) = ok v → value_uincl v (Vword (rm r))) →
+  (∀ r v, get_var vm (to_var r) = ok v → value_uincl v (Vword (xrm r))) →
   mapM (xreg_of_var ii \o v_var) xs = ok rs →
   mapM (λ x : var_i, get_var vm x) xs = ok vs →
   List.Forall2 value_uincl vs 
@@ -415,9 +413,7 @@ move => hr hxr; elim: xs rs vs.
 + by move => _ _ [<-] [<-]; constructor.
 move => x xs ih rs' vs' /=; t_xrbindP => r /xreg_of_varI ok_r rs ok_rs <- {rs'} v ok_v vs ok_vs <- {vs'} /=.
 constructor; last exact: ih.
-case: r ok_r => // r => [ /var_of_register_of_var | /xmm_register_of_varI ] rx.
-+ by apply: hr; rewrite rx.
-by apply: hxr; rewrite rx.
+by case: r ok_r => // r /of_varI rx; [ apply: hr | apply hxr]; rewrite rx.
 Qed.
 
 (*
@@ -490,3 +486,4 @@ Qed.
 *)
 
 End PROG.
+
