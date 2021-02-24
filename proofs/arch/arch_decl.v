@@ -136,38 +136,22 @@ Canonical address_eqType := EqType address address_eqMixin.
 Definition wreg  := sem_t (sword Uptr). 
 Definition wxreg := sem_t (sword xreg_size).
 
-Variant adr_kind : Type := 
-  | Compute  (* Compute the address *)
-  | Load.    (* Compute the address and load from memory *)
-
 Variant asm_arg : Type :=
   | Condt  of cond_t
   | Imm ws of word ws
   | Reg    of reg_t
-  | Adr    of adr_kind & address
+  | Adr    of address
   | XReg   of xreg_t.
 
 Definition asm_args := (seq asm_arg).
-
-Scheme Equality for adr_kind.
-
-Lemma adr_kind_eq_axiom : Equality.axiom adr_kind_beq.
-Proof.
-  move=> x y;apply:(iffP idP).
-  + by apply: internal_adr_kind_dec_bl.
-  by apply: internal_adr_kind_dec_lb.
-Qed.
-
-Definition adr_kind_eqMixin := Equality.Mixin adr_kind_eq_axiom.
-Canonical adr_kind_eqType := EqType adr_kind adr_kind_eqMixin.
 
 Definition asm_arg_beq (a1 a2:asm_arg) :=
   match a1, a2 with
   | Condt t1, Condt t2 => t1 == t2
   | Imm sz1 w1, Imm sz2 w2 => (sz1 == sz2) && (wunsigned w1 == wunsigned w2)
-  | Reg r1, Reg r2 => r1 == r2
-  | Adr k1 a1, Adr k2 a2 => (k1 == k2) && (a1 == a2)
-  | XReg r1, XReg r2 => r1 == r2
+  | Reg r1, Reg r2    => r1 == r2
+  | Adr a1, Adr a2    => a1 == a2
+  | XReg r1, XReg r2  => r1 == r2
   | _, _ => false
   end.
 
@@ -177,13 +161,11 @@ Definition Imm_inj sz sz' w w' (e: @Imm sz w = @Imm sz' w') :
 
 Lemma asm_arg_eq_axiom : Equality.axiom asm_arg_beq.
 Proof.
-  case => [t1 | sz1 w1 | r1 | k1 a1 | xr1] [t2 | sz2 w2 | r2 | k2 a2 | xr2]; apply: (iffP idP) => //=.
-  1, 5, 9, 11: by move => /eqP ->.
-  1,4,7: by case => ->.
+  case => [t1 | sz1 w1 | r1 | a1 | xr1] [t2 | sz2 w2 | r2 | a2 | xr2] =>  /=;
+    try by (constructor || apply: reflect_inj eqP => ?? []).
+  apply: (iffP idP) => //=.
   + by move=> /andP [] /eqP ? /eqP; subst => /wunsigned_inj ->.
-  + by move=> /Imm_inj [? ];subst => /= ->;rewrite !eqxx.
-  + by move=> /andP[]/eqP->/eqP->.
-  by case => -> ->; rewrite !eqxx.
+  by move=> /Imm_inj [? ];subst => /= ->;rewrite !eqxx.
 Qed.
 
 Definition asm_arg_eqMixin := Equality.Mixin asm_arg_eq_axiom.
@@ -213,19 +195,24 @@ Variant implicite_arg : Type :=
   | IAreg   of reg_t  (* the string corresponding to the flag *)
   .
 
+Variant adr_kind : Type := 
+  | Compute  (* Compute the address *)
+  | Load.    (* Compute the address and load from memory *)
+
 Variant arg_desc :=
 | ADImplicit  of implicite_arg
-| ADExplicit  of nat & option reg_t. 
+| ADExplicit  of adr_kind & nat & option reg_t. 
 
 Definition F  f   := ADImplicit (IArflag f).
 Definition R  r   := ADImplicit (IAreg   r).
-Definition E  n   := ADExplicit n None.
-Definition Ef n r := ADExplicit n (Some  r).
+Definition E  n   := ADExplicit Load n None.
+Definition Ec n   := ADExplicit Compute n None.
+Definition Ef n r := ADExplicit Load n (Some  r).
 
 Definition check_arg_dest (ad:arg_desc) (ty:stype) :=
   match ad with
   | ADImplicit _ => true
-  | ADExplicit _ _ => ty != sbool
+  | ADExplicit _ _ _ => ty != sbool
   end.
 
 Inductive pp_asm_op_ext :=
@@ -263,7 +250,6 @@ Record instr_desc_t := mk_instr_desc {
   id_wsize    : wsize;  (* ..... *)
   id_pp_asm   : asm_args -> pp_asm_op;
 }.
-
 
 Variant prim_constructor (asm_op:Type) :=
   | PrimP of wsize & (wsize -> asm_op)

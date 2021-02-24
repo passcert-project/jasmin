@@ -672,9 +672,6 @@ Variant arg_desc :=
 | ADImplicit  of implicite_arg
 | ADExplicit  of nat & option var. 
 
-Variant safe_cond :=
-  | NotZero of wsize & nat. (* the nth argument of size sz is not zero *)
-
 Record instruction := mkInstruction {
   str      : unit -> string;
   tin      : list stype;
@@ -710,7 +707,7 @@ Class asmOp (asm_op : Type) :=
 }.
 
 (* ---------------------------------------------------------------------------- *)
-Variant sopn (asm_op:Type) : Type :=
+Variant sopn_t (asm_op:Type) : Type :=
 (* Generic operation *)
 | Onop
 | Omulu     of wsize   (* cpu   : [sword; sword]        -> [sword;sword] *)
@@ -725,11 +722,28 @@ Variant sopn (asm_op:Type) : Type :=
 | Oasm      of asm_op  (* x86 instruction *)
 .
 
+Definition asm_op {op:Type} {asmop : asmOp op} := op.
+Definition sopn {op:Type} {asmop : asmOp op} := sopn_t op.
+
+Inductive instr_r_t {op:Type} :=
+| Cassgn : lval -> assgn_tag -> stype -> pexpr -> instr_r_t
+| Copn   : lvals -> assgn_tag -> sopn_t op -> pexprs -> instr_r_t
+| Cif    : pexpr -> seq instr_t -> seq instr_t  -> instr_r_t 
+| Cfor   : var_i -> range -> seq instr_t -> instr_r_t
+| Cwhile : align -> seq instr_t -> pexpr -> seq instr_t -> instr_r_t 
+| Ccall  : inline_info -> lvals -> funname -> pexprs -> instr_r_t
+
+with instr_t (op:Type) := MkI : instr_info -> instr_r_t -> instr_t.
+
+Definition instr_r {op:Type} {asmop : asmOp op} := @instr_r_t op.
+Definition instr   {op:Type} {asmop : asmOp op} := @instr_t op.
+Notation cmd := (seq instr).
+
 Section ASM_OP.
 
 Context {asm_op:Type} {asmop:asmOp asm_op}.
 
-Definition sopn_beq (o1 o2: sopn asm_op) := 
+Definition sopn_beq (o1 o2: sopn_t asm_op) := 
   match o1, o2 with
   | Onop, Onop                   => true
   | Omulu ws1, Omulu ws2         => ws1 == ws2
@@ -750,7 +764,7 @@ Proof.
 Qed.
 
 Definition sopn_eqMixin     := Equality.Mixin sopn_eq_axiom.
-Canonical  sopn_eqType      := Eval hnf in EqType (sopn asm_op) sopn_eqMixin.
+Canonical  sopn_eqType      := Eval hnf in EqType (sopn_t asm_op) sopn_eqMixin.
 
 (* ----------------------------------------------------------------------------- *)
 
@@ -839,18 +853,6 @@ Definition sopn_tout o : list stype := tout (get_instr o).
 Definition sopn_sem  o := semi (get_instr o).
 Definition wsize_of_sopn o : wsize := wsizei (get_instr o).
 
-Inductive instr_r :=
-| Cassgn : lval -> assgn_tag -> stype -> pexpr -> instr_r
-| Copn   : lvals -> assgn_tag -> sopn asm_op -> pexprs -> instr_r
-
-| Cif    : pexpr -> seq instr -> seq instr  -> instr_r
-| Cfor   : var_i -> range -> seq instr -> instr_r
-| Cwhile : align -> seq instr -> pexpr -> seq instr -> instr_r
-| Ccall  : inline_info -> lvals -> funname -> pexprs -> instr_r
-
-with instr := MkI : instr_info -> instr_r ->  instr.
-
-Notation cmd := (seq instr).
 
 Definition instr_d (i:instr) :=
   match i with
@@ -1261,7 +1263,7 @@ Definition vrvs := (vrvs_rec Sv.empty).
 Definition lv_write_mem (r:lval) : bool :=
   if r is Lmem _ _ _ then true else false.
 
-Fixpoint write_i_rec s i :=
+Fixpoint write_i_rec s (i:instr_r) :=
   match i with
   | Cassgn x _ _ _    => vrv_rec s x
   | Copn xs _ _ _   => vrvs_rec s xs

@@ -1166,7 +1166,7 @@ Definition Ox86_BT_instr                :=
 
 Definition check_lea (_:wsize) := [:: [::r; m true]].
 Definition Ox86_LEA_instr :=
-  mk_instr_w_w "LEA" x86_LEA msb_dfl [:: E 1] [:: E 0] 2 check_lea no_imm (primP LEA) (pp_iname "lea").
+  mk_instr_w_w "LEA" x86_LEA msb_dfl [:: Ec 1] [:: E 0] 2 check_lea no_imm (primP LEA) (pp_iname "lea").
 
 Definition check_test (sz:wsize) := [:: [::rm false; ri (max_32 sz)]].
 Definition Ox86_TEST_instr              :=
