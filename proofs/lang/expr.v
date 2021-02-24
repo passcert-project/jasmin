@@ -28,7 +28,7 @@ From mathcomp Require Import all_ssreflect all_algebra.
 Require Import oseq.
 Require Export ZArith Setoid Morphisms.
 From CoqWord Require Import ssrZ.
-Require Export strings word utils type ident var global sem_type arch_decl x86_decl x86_instr_decl.
+Require Export strings word utils type ident var global sem_type.
 Require Import xseq.
 Import Utf8 ZArith.
 
@@ -57,13 +57,13 @@ Variant op_kind :=
   | Op_w of wsize.
 
 Variant sop1 :=
-| Oword_of_int of wsize (* int → word *)
-| Oint_of_word of wsize (* word → unsigned int *)
+| Oword_of_int of wsize     (* int → word *)
+| Oint_of_word of wsize     (* word → unsigned int *)
 | Osignext of wsize & wsize (* Sign-extension: output-size, input-size *)
 | Ozeroext of wsize & wsize (* Zero-extension: output-size, input-size *)
-| Onot (* Boolean negation *)
-| Olnot of wsize (* Bitwize not: 1s’ complement *)
-| Oneg  of op_kind (* Arithmetic negation *)
+| Onot                      (* Boolean negation *)
+| Olnot of wsize            (* Bitwize not: 1s’ complement *)
+| Oneg  of op_kind          (* Arithmetic negation *)
 .
 
 Variant sop2 :=
@@ -104,20 +104,6 @@ Variant opN :=
 | Opack of wsize & pelem (* Pack words of size pelem into one word of wsize *)
 .
 
-Variant sopn : Set :=
-(* Generic operation *)
-| Onop
-| Omulu     of wsize   (* cpu   : [sword; sword]        -> [sword;sword] *)
-| Oaddcarry of wsize   (* cpu   : [sword; sword; sbool] -> [sbool;sword] *)
-| Osubcarry of wsize   (* cpu   : [sword; sword; sbool] -> [sbool;sword] *)
-
-(* Low level x86 operations *)
-| Oset0     of wsize  (* set register + flags to 0 (implemented using XOR x x or VPXOR x x) *)
-| Oconcat128          (* concatenate 2 128 bits word into 1 256 word register *)   
-| Ox86MOVZX32
-| Ox86      of x86_op  (* x86 instruction *)
-.
-
 Scheme Equality for sop1.
 (* Definition sop1_beq : sop1 -> sop1 -> bool *)
 
@@ -155,133 +141,6 @@ Qed.
 
 Definition opN_eqMixin     := Equality.Mixin opN_eq_axiom.
 Canonical  opN_eqType      := Eval hnf in EqType opN opN_eqMixin.
-
-Scheme Equality for sopn.
-(* Definition sopn_beq : sopn -> sopn -> bool *)
-Lemma sopn_eq_axiom : Equality.axiom sopn_beq.
-Proof.
-  move=> x y;apply:(iffP idP).
-  + by apply: internal_sopn_dec_bl.
-  by apply: internal_sopn_dec_lb.
-Qed.
-
-Definition sopn_eqMixin     := Equality.Mixin sopn_eq_axiom.
-Canonical  sopn_eqType      := Eval hnf in EqType sopn sopn_eqMixin.
-
-(* ----------------------------------------------------------------------------- *)
-
-Record instruction := mkInstruction {
-  str      : unit -> string;
-  tin      : list stype;
-  i_in     : seq arg_desc; 
-  tout     : list stype;
-  i_out    : seq arg_desc;
-  semi     : sem_prod tin (exec (sem_tuple tout));
-  tin_narr : all is_not_sarr tin;
-  wsizei   : wsize;
-  i_safe   : seq safe_cond;
-}.
-
-Notation mk_instr str tin i_in tout i_out semi wsizei safe:=
-  {| str      := str;
-     tin      := tin;
-     i_in     := i_in;
-     tout     := tout;
-     i_out    := i_out;
-     semi     := semi;
-     tin_narr := refl_equal;
-     wsizei   := wsizei;
-     i_safe   := safe;
-  |}.
-
-(* ----------------------------------------------------------------------------- *)
-
-Definition Omulu_instr sz := 
-  mk_instr (pp_sz "mulu" sz) 
-           (w2_ty sz sz) [:: R RAX; E 0]
-           (w2_ty sz sz) [:: R RDX; R RAX] (fun x y => ok (@wumul sz x y)) sz [::].
- 
-Definition Oaddcarry_instr sz := 
-  mk_instr (pp_sz "addc" sz) 
-           [::sword sz; sword sz; sbool] 
-           [::E 0; E 1; F CF]
-           (sbool :: (w_ty sz))  
-           [:: F CF; E 0]
-           (fun x y c => let p := @waddcarry sz x y c in ok (Some p.1, p.2))
-           sz [::].
-
-Definition Osubcarry_instr sz:= 
-  mk_instr (pp_sz "subc" sz) 
-           [::sword sz; sword sz; sbool] [::E 0; E 1; F CF]
-           (sbool :: (w_ty sz)) [:: F CF; E 0] 
-           (fun x y c => let p := @wsubcarry sz x y c in ok (Some p.1, p.2))
-           sz [::].
-
-Definition Oset0_instr sz  :=
-  if (sz <= U64)%CMP then 
-    mk_instr (pp_sz "set0" sz)
-             [::] [::]
-             (b5w_ty sz) (implicit_flags ++ [::E 0])
-             (let vf := Some false in
-              ok (::vf, vf, vf, vf, Some true & (0%R: word sz)))
-             sz [::]
-  else 
-    mk_instr (pp_sz "setw0" sz)
-             [::] [::]  
-             (w_ty sz) [::E 0] 
-             (ok (0%R: word sz)) sz [::].
-
-Definition Ox86MOVZX32_instr := 
-  mk_instr (pp_s "MOVZX32") 
-           [:: sword32] [:: E 1] 
-           [:: sword64] [:: E 0] 
-           (λ x : u32, ok (zero_extend U64 x)) 
-           U32 [::].
-
-Definition Onop_instr := 
-  mk_instr (pp_s "NOP")
-           [::] [::]
-           [::] [::]
-           (ok tt)
-           U64 [::].
-
-Definition Oconcat128_instr := 
-  mk_instr (pp_s "concat_2u128") 
-           [:: sword128; sword128 ] [:: E 1; E 2] 
-           [:: sword256] [:: E 0] 
-           (λ h l : u128, ok (make_vec U256 [::l;h]))
-           U128 [::].
-
-Definition get_instr o :=
-  match o with
-  | Onop         => Onop_instr
-  | Omulu     sz => Omulu_instr sz
-  | Oaddcarry sz => Oaddcarry_instr sz
-  | Osubcarry sz => Osubcarry_instr sz
-  | Oset0     sz => Oset0_instr sz
-  | Oconcat128   => Oconcat128_instr 
-  | Ox86MOVZX32  => Ox86MOVZX32_instr
-  | Ox86   instr =>
-      let id := instr_desc instr in
-      {|
-        str      := id.(id_str_jas);
-        tin      := id.(id_tin);
-        i_in     := id.(id_in);
-        i_out    := id.(id_out);
-        tout     := id.(id_tout);
-        semi     := id.(id_semi);
-        tin_narr := id.(id_tin_narr);
-        wsizei   := id.(id_wsize);
-        i_safe   := id.(id_safe)
-      |}
-  end.
-
-Definition string_of_sopn o : string := str (get_instr o) tt.
-
-Definition sopn_tin o : list stype := tin (get_instr o).
-Definition sopn_tout o : list stype := tout (get_instr o).
-Definition sopn_sem  o := semi (get_instr o).
-Definition wsize_of_sopn o : wsize := wsizei (get_instr o).
 
 (* Type of unany operators: input, output *)
 Definition type_of_op1 (o: sop1) : stype * stype :=
@@ -802,9 +661,187 @@ Canonical  align_eqType      := Eval hnf in EqType align align_eqMixin.
 
 (* -------------------------------------------------------------------- *)
 
+(* ----------------------------------------------------------------------------- *)
+
+Variant implicite_arg : Type :=
+  | IArflag of var 
+  | IAreg   of var 
+  .
+
+Variant arg_desc :=
+| ADImplicit  of implicite_arg
+| ADExplicit  of nat & option var. 
+
+Variant safe_cond :=
+  | NotZero of wsize & nat. (* the nth argument of size sz is not zero *)
+
+Record instruction := mkInstruction {
+  str      : unit -> string;
+  tin      : list stype;
+  i_in     : seq arg_desc; 
+  tout     : list stype;
+  i_out    : seq arg_desc;
+  semi     : sem_prod tin (exec (sem_tuple tout));
+  tin_narr : all is_not_sarr tin;
+  wsizei   : wsize;
+  i_safe   : seq safe_cond;
+}.
+
+Notation mk_instr str tin i_in tout i_out semi wsizei safe:=
+  {| str      := str;
+     tin      := tin;
+     i_in     := i_in;
+     tout     := tout;
+     i_out    := i_out;
+     semi     := semi;
+     tin_narr := refl_equal;
+     wsizei   := wsizei;
+     i_safe   := safe;
+  |}.
+
+Class eqTypeC (T:Type) := 
+  { beq : T -> T -> bool
+  ; ceqP: Equality.axiom beq }.
+
+Class asmOp (asm_op : Type) := 
+  { _eqT         :> eqTypeC asm_op
+  ; asm_op_instr : asm_op -> instruction
+  ; set0_instr   : wsize -> instruction
+}.
+
+(* ---------------------------------------------------------------------------- *)
+Variant sopn (asm_op:Type) : Type :=
+(* Generic operation *)
+| Onop
+| Omulu     of wsize   (* cpu   : [sword; sword]        -> [sword;sword] *)
+| Oaddcarry of wsize   (* cpu   : [sword; sword; sbool] -> [sbool;sword] *)
+| Osubcarry of wsize   (* cpu   : [sword; sword; sbool] -> [sbool;sword] *)
+
+(* Low level x86 operations *)
+| Oset0     of wsize  (* set register + flags to 0 (implemented using XOR x x or VPXOR x x) *)
+(* FIXME ARM *)
+| Oconcat128          (* concatenate 2 128 bits word into 1 256 word register *)   
+| Ox86MOVZX32
+| Oasm      of asm_op  (* x86 instruction *)
+.
+
+Section ASM_OP.
+
+Context {asm_op:Type} {asmop:asmOp asm_op}.
+
+Definition sopn_beq (o1 o2: sopn asm_op) := 
+  match o1, o2 with
+  | Onop, Onop                   => true
+  | Omulu ws1, Omulu ws2         => ws1 == ws2
+  | Oaddcarry ws1, Oaddcarry ws2 => ws1 == ws2 
+  | Osubcarry ws1, Osubcarry ws2 => ws1 == ws2 
+  | Oset0 ws1, Oset0 ws2         => ws1 == ws2
+  | Oconcat128, Oconcat128       => true
+  | Ox86MOVZX32, Ox86MOVZX32     => true
+  | Oasm o1, Oasm o2             => beq o1 o2
+  | _, _                         => false
+  end.
+
+Lemma sopn_eq_axiom : Equality.axiom sopn_beq.
+Proof.
+  move=> [|ws1|ws1|ws1|ws1|||o1] [|ws2|ws2|ws2|ws2|||o2] /=; 
+   try by (constructor || apply: reflect_inj eqP => ?? []).
+  by case: ceqP => [-> | h]; constructor => // -[] /h.
+Qed.
+
+Definition sopn_eqMixin     := Equality.Mixin sopn_eq_axiom.
+Canonical  sopn_eqType      := Eval hnf in EqType (sopn asm_op) sopn_eqMixin.
+
+(* ----------------------------------------------------------------------------- *)
+
+Local Notation E n := (ADExplicit n None).
+
+Definition Omulu_instr sz := 
+  mk_instr (pp_sz "mulu" sz) 
+           [:: sword sz; sword sz] 
+           [:: E 0; E 1]  (* Remark this info is irrelevant *)
+           [:: sword sz; sword sz] 
+           [:: E 2; E 3]  (* Remark this info is irrelevant *) 
+           (fun x y => ok (@wumul sz x y)) sz [::].
+ 
+Definition Oaddcarry_instr sz := 
+  mk_instr (pp_sz "addc" sz) 
+           [::sword sz; sword sz; sbool] 
+           [::E 0; E 1; E 2] (* Remark this info is irrelevant *)
+           [::sbool; sword sz]  
+           [:: E 3; E 4]     (* Remark this info is irrelevant *)
+           (fun x y c => let p := @waddcarry sz x y c in ok (Some p.1, p.2))
+           sz [::].
+
+Definition Osubcarry_instr sz:= 
+  mk_instr (pp_sz "subc" sz) 
+           [::sword sz; sword sz; sbool] 
+           [::E 0; E 1; E 2] (* Remark this info is irrelevant *)
+           [::sbool; sword sz]  
+           [:: E 3; E 4]     (* Remark this info is irrelevant *)
+           (fun x y c => let p := @wsubcarry sz x y c in ok (Some p.1, p.2))
+           sz [::].
+
+(* FIXME this need to be move in asm specific *)
+(*
+Definition Oset0_instr sz  :=
+  if (sz <= U64)%CMP then 
+    mk_instr (pp_sz "set0" sz)
+             [::] [::]
+             (b5w_ty sz) (implicit_flags ++ [::E 0])
+             (let vf := Some false in
+              ok (::vf, vf, vf, vf, Some true & (0%R: word sz)))
+             sz [::]
+  else 
+    mk_instr (pp_sz "setw0" sz)
+             [::] [::]  
+             (w_ty sz) [::E 0] 
+             (ok (0%R: word sz)) sz [::].
+*)
+
+Definition Ox86MOVZX32_instr := 
+  mk_instr (pp_s "MOVZX32") 
+           [:: sword32] [:: E 1] 
+           [:: sword64] [:: E 0] 
+           (λ x : u32, ok (zero_extend U64 x)) 
+           U32 [::].
+
+Definition Onop_instr := 
+  mk_instr (pp_s "NOP")
+           [::] [::]
+           [::] [::]
+           (ok tt)
+           U64 [::].
+
+Definition Oconcat128_instr := 
+  mk_instr (pp_s "concat_2u128") 
+           [:: sword128; sword128 ] [:: E 1; E 2] 
+           [:: sword256] [:: E 0] 
+           (λ h l : u128, ok (make_vec U256 [::l;h]))
+           U128 [::].
+
+Definition get_instr o :=
+  match o with
+  | Onop         => Onop_instr
+  | Omulu     sz => Omulu_instr sz
+  | Oaddcarry sz => Oaddcarry_instr sz
+  | Osubcarry sz => Osubcarry_instr sz
+  | Oset0     sz => set0_instr sz
+  | Oconcat128   => Oconcat128_instr 
+  | Ox86MOVZX32  => Ox86MOVZX32_instr
+  | Oasm       o => asm_op_instr o
+  end.
+
+Definition string_of_sopn o : string := str (get_instr o) tt.
+
+Definition sopn_tin o : list stype := tin (get_instr o).
+Definition sopn_tout o : list stype := tout (get_instr o).
+Definition sopn_sem  o := semi (get_instr o).
+Definition wsize_of_sopn o : wsize := wsizei (get_instr o).
+
 Inductive instr_r :=
 | Cassgn : lval -> assgn_tag -> stype -> pexpr -> instr_r
-| Copn   : lvals -> assgn_tag -> sopn -> pexprs -> instr_r
+| Copn   : lvals -> assgn_tag -> sopn asm_op -> pexprs -> instr_r
 
 | Cif    : pexpr -> seq instr -> seq instr  -> instr_r
 | Cfor   : var_i -> range -> seq instr -> instr_r
@@ -1658,3 +1695,4 @@ Lemma eq_expr_app1 o1 o2 e1 e2 :
   -> [/\ o1 = o2 & eq_expr e1 e2].
 Proof. by move=> /= /andP[/eqP-> ->]. Qed.
 
+End ASM_OP.

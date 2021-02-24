@@ -58,6 +58,11 @@ Qed.
 End FinIsCount.
 End FinIsCount.
 
+(* -------------------------------------------------------------------- *)
+Lemma reflect_inj (T:eqType) (U:Type) (f:T -> U) a b : 
+  injective f -> reflect (a = b) (a == b) -> reflect (f a = f b) (a == b).
+Proof. by move=> hinj heq; apply: (iffP heq) => [| /hinj ] ->. Qed.
+
 (* ** Result monad
  * -------------------------------------------------------------------- *)
 

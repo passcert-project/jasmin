@@ -70,23 +70,20 @@ Class ToString (t:stype) (T:finType) :=
 
 (* ==================================================================== *)
 
-Class arch_decl (reg xreg rflag:finType) (condt: eqType) := 
-  { reg_size  : wsize
+Class arch_decl := 
+  { reg_t     : finType
+  ; xreg_t    : finType
+  ; rflag_t   : finType
+  ; cond_t    : eqType
   ; xreg_size : wsize
-  ; toS_r     :> ToString (sword reg_size) reg
-  ; toS_x     :> ToString (sword xreg_size) xreg
-  ; toS_f     :> ToString sbool rflag
+  ; toS_r     :> ToString (sword Uptr) reg_t
+  ; toS_x     :> ToString (sword xreg_size) xreg_t
+  ; toS_f     :> ToString sbool rflag_t
 }.
 
 Section DECL.
   
-Context {reg xreg rflag:finType} {condt: eqType}.
-Context {arch : arch_decl reg xreg rflag condt}.
-
-Definition reg_t   {_:arch_decl reg xreg rflag condt} := reg.
-Definition xreg_t  {_:arch_decl reg xreg rflag condt} := xreg.
-Definition rflag_t {_:arch_decl reg xreg rflag condt} := rflag.
-Definition cond_t  {_:arch_decl reg xreg rflag condt} := condt.
+Context {arch : arch_decl}.
 
 (* -------------------------------------------------------------------- *)
 (* disp + base + scale × offset *)
@@ -136,97 +133,40 @@ Qed.
 Definition address_eqMixin := Equality.Mixin address_eq_axiom.
 Canonical address_eqType := EqType address address_eqMixin.
 
-Definition wreg  := sem_t (sword reg_size). 
+Definition wreg  := sem_t (sword Uptr). 
 Definition wxreg := sem_t (sword xreg_size).
 
-End DECL.
-
-(* TODO ARM : move this in arch_sem *)
-Module RegMap. Section Section.
-  Context {reg xreg rflag:finType} {condt: eqType}.
-  Context {arch : arch_decl reg xreg rflag condt}.
-
-  Definition map := {ffun reg_t -> wreg}.
-
-  Definition set (m : map) (x : reg_t) (y : wreg) : map :=
-    [ffun z => if (z == x) then y else m z].
-
-End Section. End RegMap.
-
-(* -------------------------------------------------------------------- *)
-
-Module XRegMap. Section Section.
-  Context {reg xreg rflag:finType} {condt: eqType}.
-  Context {arch : arch_decl reg xreg rflag condt}.
-
-  Definition map := {ffun xreg_t -> wxreg }.
-
-  Definition set (m : map) (x : xreg_t) (y : wxreg) : map :=
-    [ffun z => if (z == x) then y else m z].
-End Section. End XRegMap.
-
-(* -------------------------------------------------------------------- *)
-
-Module RflagMap. Section Section.
-  Context {reg xreg rflag:finType} {condt: eqType}.
-  Context {arch : arch_decl reg xreg rflag condt}.
-
-  Variant rflagv := Def of bool | Undef.
-
-  Definition map := {ffun rflag_t -> rflagv}.
-
-  Definition set (m : map) (x : rflag_t) (y : bool) : map :=
-    [ffun z => if (z == x) then Def y else m z].
-
-  Definition oset (m : map) (x : rflag_t) (y : rflagv) : map :=
-    [ffun z => if (z == x) then y else m z].
-
-  Definition update (m : map) (f : rflag_t -> option rflagv) : map :=
-    [ffun rf => odflt (m rf) (f rf)].
-
-End Section. End RflagMap.
-
-(* -------------------------------------------------------------------- *)
-Notation regmap   := RegMap.map.
-Notation xregmap  := XRegMap.map.
-Notation rflagmap := RflagMap.map.
-Notation Def      := RflagMap.Def.
-Notation Undef    := RflagMap.Undef.
-
-Scheme Equality for RflagMap.rflagv.
-
-Lemma rflagv_eq_axiom : Equality.axiom rflagv_beq.
-Proof.
-  move=> x y;apply:(iffP idP).
-  + by apply: internal_rflagv_dec_bl.
-  by apply: internal_rflagv_dec_lb.
-Qed.
-
-Definition rflagv_eqMixin := Equality.Mixin rflagv_eq_axiom.
-Canonical rflagv_eqType := EqType _ rflagv_eqMixin.
-
-(* -------------------------------------------------------------------- *)
-
-Section Section.
-
-Context {reg xreg rflag:finType} {condt: eqType}.
-Context {arch : arch_decl reg xreg rflag condt}.
+Variant adr_kind : Type := 
+  | Compute  (* Compute the address *)
+  | Load.    (* Compute the address and load from memory *)
 
 Variant asm_arg : Type :=
   | Condt  of cond_t
   | Imm ws of word ws
   | Reg    of reg_t
-  | Adr    of address
+  | Adr    of adr_kind & address
   | XReg   of xreg_t.
 
 Definition asm_args := (seq asm_arg).
+
+Scheme Equality for adr_kind.
+
+Lemma adr_kind_eq_axiom : Equality.axiom adr_kind_beq.
+Proof.
+  move=> x y;apply:(iffP idP).
+  + by apply: internal_adr_kind_dec_bl.
+  by apply: internal_adr_kind_dec_lb.
+Qed.
+
+Definition adr_kind_eqMixin := Equality.Mixin adr_kind_eq_axiom.
+Canonical adr_kind_eqType := EqType adr_kind adr_kind_eqMixin.
 
 Definition asm_arg_beq (a1 a2:asm_arg) :=
   match a1, a2 with
   | Condt t1, Condt t2 => t1 == t2
   | Imm sz1 w1, Imm sz2 w2 => (sz1 == sz2) && (wunsigned w1 == wunsigned w2)
   | Reg r1, Reg r2 => r1 == r2
-  | Adr a1, Adr a2 => a1 == a2
+  | Adr k1 a1, Adr k2 a2 => (k1 == k2) && (a1 == a2)
   | XReg r1, XReg r2 => r1 == r2
   | _, _ => false
   end.
@@ -237,11 +177,13 @@ Definition Imm_inj sz sz' w w' (e: @Imm sz w = @Imm sz' w') :
 
 Lemma asm_arg_eq_axiom : Equality.axiom asm_arg_beq.
 Proof.
-  case => [t1 | sz1 w1 | r1 | a1 | xr1] [t2 | sz2 w2 | r2 | a2 | xr2]; apply: (iffP idP) => //=.
-  1, 5, 7, 9, 11: by move => /eqP ->.
-  1, 4-7: by case => ->.
+  case => [t1 | sz1 w1 | r1 | k1 a1 | xr1] [t2 | sz2 w2 | r2 | k2 a2 | xr2]; apply: (iffP idP) => //=.
+  1, 5, 9, 11: by move => /eqP ->.
+  1,4,7: by case => ->.
   + by move=> /andP [] /eqP ? /eqP; subst => /wunsigned_inj ->.
-  by move=> /Imm_inj [? ];subst => /= ->;rewrite !eqxx.
+  + by move=> /Imm_inj [? ];subst => /= ->;rewrite !eqxx.
+  + by move=> /andP[]/eqP->/eqP->.
+  by case => -> ->; rewrite !eqxx.
 Qed.
 
 Definition asm_arg_eqMixin := Equality.Mixin asm_arg_eq_axiom.
@@ -301,9 +243,6 @@ Record pp_asm_op := mk_pp_asm_op {
   pp_aop_args : seq (wsize * asm_arg);
 }.
 
-Variant safe_cond :=
-  | NotZero of wsize & nat. (* the nth argument of size sz is not zero *)
-
 Record instr_desc_t := mk_instr_desc {
   (* Info for x86 sem *)
   id_msb_flag : msb_flag;
@@ -325,6 +264,7 @@ Record instr_desc_t := mk_instr_desc {
   id_pp_asm   : asm_args -> pp_asm_op;
 }.
 
+
 Variant prim_constructor (asm_op:Type) :=
   | PrimP of wsize & (wsize -> asm_op)
   | PrimM of asm_op
@@ -333,9 +273,56 @@ Variant prim_constructor (asm_op:Type) :=
   | PrimVV of (velem → wsize → velem → wsize → asm_op)
   .
 
-Class asm_op_decl (asm_op:Type) := {
-   instr_desc : asm_op -> instr_desc_t;
+Class asm_op_decl := {
+   asm_op      : Type;
+   instr_desc  : asm_op -> instr_desc_t;
    prim_string : list (string * prim_constructor asm_op);
 }.
 
-End Section.
+Context { asm_op_d : asm_op_decl}.
+
+Variant asm_i : Type :=
+| ALIGN
+| LABEL of label
+| STORELABEL of reg_t & label (* Store the address of a local label *)
+  (* Jumps *)
+| JMP    of remote_label (* Direct jump *)
+| JMPI   of asm_arg (* Indirect jump *)
+| Jcc    of label & cond_t  (* Conditional jump *)
+| AsmOp  of asm_op & asm_args.
+
+Definition asm_code := seq asm_i.
+
+Record asm_fundef := XFundef {
+ asm_fd_align : wsize;
+ asm_fd_arg  : asm_args;   (* FIXME did we really want this *)
+ asm_fd_body : asm_code;
+ asm_fd_res  : asm_args;   (* FIXME did we really want this *)
+ asm_fd_export: bool;
+}.
+
+Record asm_prog : Type :=
+  { asm_globs : seq u8;
+    asm_funcs : seq (funname * asm_fundef) }.
+
+End DECL.
+
+Variant rflagv := Def of bool | Undef.
+Scheme Equality for rflagv.
+
+Lemma rflagv_eq_axiom : Equality.axiom rflagv_beq.
+Proof.
+  move=> x y;apply:(iffP idP).
+  + by apply: internal_rflagv_dec_bl.
+  by apply: internal_rflagv_dec_lb.
+Qed.
+
+Definition rflagv_eqMixin := Equality.Mixin rflagv_eq_axiom.
+Canonical rflagv_eqType := EqType _ rflagv_eqMixin.
+
+Class asm := 
+ { _arch_decl   :> arch_decl 
+ ; _asm_op_decl :> asm_op_decl
+ ; _eval_cond   : (rflag_t -> result error bool) -> cond_t -> result error bool
+ }.
+

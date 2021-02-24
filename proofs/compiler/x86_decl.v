@@ -344,15 +344,15 @@ Instance x86_rflag_toS : ToString sbool [finType of rflag] :=
 
 (* -------------------------------------------------------------------- *)
 
-Instance x86_decl : 
-  arch_decl [finType of register] 
-            [finType of xmm_register] 
-            [finType of rflag] 
-            [eqType of condt] := 
-{| reg_size  := U64
- ; xreg_size := U256
- ; toS_r     := x86_reg_toS
- ; toS_x     := x86_xreg_toS
- ; toS_f     := x86_rflag_toS |}.
+Instance x86_decl : arch_decl :=
+  {| reg_t     := [finType of register]
+   ; xreg_t    := [finType of xmm_register]
+   ; rflag_t   := [finType of rflag]
+   ; cond_t    := [eqType of condt]
+   ; xreg_size := U256
+   ; toS_r     := x86_reg_toS
+   ; toS_x     := x86_xreg_toS
+   ; toS_f     := x86_rflag_toS |}.
+
 
 

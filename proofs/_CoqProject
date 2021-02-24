@@ -13,6 +13,7 @@ ssrmisc/oseq.v
 3rdparty/ssrring.v
 3rdparty/xseq.v
 arch/arch_decl.v
+arch/arch_sem.v
 compiler/allocation.v
 compiler/array_expansion.v
 compiler/array_init.v
@@ -74,6 +75,7 @@ lang/sem_type.v
 lang/strings.v
 lang/type.v
 lang/utils.v
+lang/values.v
 lang/var.v
 lang/warray_.v
 lang/word.v
