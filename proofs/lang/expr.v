@@ -696,10 +696,6 @@ Notation mk_instr str tin i_in tout i_out semi wsizei safe:=
      i_safe   := safe;
   |}.
 
-Class eqTypeC (T:Type) := 
-  { beq : T -> T -> bool
-  ; ceqP: Equality.axiom beq }.
-
 Class asmOp (asm_op : Type) := 
   { _eqT         :> eqTypeC asm_op
   ; asm_op_instr : asm_op -> instruction

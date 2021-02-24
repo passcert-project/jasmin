@@ -191,7 +191,7 @@ Definition check_oreg or ai :=
   | None, _        => true
   end.
 
-Definition eval_asm_arg (s: asmmem) (a: asm_arg) (ty: stype) : exec value :=
+Definition eval_asm_arg k (s: asmmem) (a: asm_arg) (ty: stype) : exec value :=
   match a with
   | Condt c   => Let b := eval_cond s c in ok (Vbool b)
   | Imm sz' w =>
@@ -200,7 +200,7 @@ Definition eval_asm_arg (s: asmmem) (a: asm_arg) (ty: stype) : exec value :=
     | _        => type_error
     end
   | Reg r     => ok (Vword (s.(asm_reg) r))
-  | Adr k adr   =>
+  | Adr adr   =>
     let p := decode_addr s adr in
     match k with
     | Compute => 
@@ -221,12 +221,12 @@ Definition eval_arg_in_v (s:asmmem) (args:asm_args) (a:arg_desc) (ty:stype) : ex
   match a with
   | ADImplicit (IAreg r)   => ok (Vword (s.(asm_reg) r))
   | ADImplicit (IArflag f) => Let b := st_get_rflag s f in ok (Vbool b)
-  | ADExplicit i or =>
+  | ADExplicit k i or =>
     match onth args i with
     | None => type_error
     | Some a =>
       Let _ := assert (check_oreg or a) ErrType in
-      eval_asm_arg s a ty
+      eval_asm_arg k s a ty
     end
   end.
 
@@ -318,16 +318,16 @@ Definition mem_write_word (f:msb_flag) (s:asmmem) (args:asm_args) (ad:arg_desc) 
   match ad with
   | ADImplicit (IAreg r)   => ok (mem_update_reg f r w s)
   | ADImplicit (IArflag f) => type_error
-  | ADExplicit i or    =>
+  | ADExplicit _ i or    =>
     match onth args i with
     | None => type_error
     | Some a =>
       Let _ := assert (check_oreg or a) ErrType in
       match a with
-      | Reg r     => ok (mem_update_reg  f r w s)
-      | XReg x    => ok (mem_update_xreg f x w s)
-      | Adr _ adr => mem_write_mem (decode_addr s adr) w s
-      | _         => type_error
+      | Reg r   => ok (mem_update_reg  f r w s)
+      | XReg x  => ok (mem_update_xreg f x w s)
+      | Adr adr => mem_write_mem (decode_addr s adr) w s
+      | _       => type_error
       end
     end
   end.
@@ -397,7 +397,7 @@ Definition eval_instr (i : asm_i) (s: asm_state) : exec asm_state :=
     else type_error
   | JMP lbl   => eval_JMP p lbl s
   | JMPI d =>
-    Let v := eval_asm_arg s d (sword Uptr) >>= to_pointer in
+    Let v := eval_asm_arg Compute s d (sword Uptr) >>= to_pointer in
     if decode_label labels v is Some lbl then
       eval_JMP p lbl s
     else type_error
