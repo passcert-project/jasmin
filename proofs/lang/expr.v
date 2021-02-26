@@ -703,6 +703,9 @@ Class asmOp (asm_op : Type) :=
 }.
 
 (* ---------------------------------------------------------------------------- *)
+(* FIXME ARM, this need to be reintroduced                                      *)
+
+(*
 Variant sopn_t (asm_op:Type) : Type :=
 (* Generic operation *)
 | Onop
@@ -718,27 +721,28 @@ Variant sopn_t (asm_op:Type) : Type :=
 | Oasm      of asm_op  (* x86 instruction *)
 .
 
-Definition asm_op {op:Type} {asmop : asmOp op} := op.
+Definition asm_op_t {op:Type} {asmop : asmOp op} := op.
 Definition sopn {op:Type} {asmop : asmOp op} := sopn_t op.
-
-Inductive instr_r_t {op:Type} :=
+*)
+Inductive instr_r_t {asm_op:Type} :=
 | Cassgn : lval -> assgn_tag -> stype -> pexpr -> instr_r_t
-| Copn   : lvals -> assgn_tag -> sopn_t op -> pexprs -> instr_r_t
+| Copn   : lvals -> assgn_tag -> asm_op -> pexprs -> instr_r_t
 | Cif    : pexpr -> seq instr_t -> seq instr_t  -> instr_r_t 
 | Cfor   : var_i -> range -> seq instr_t -> instr_r_t
 | Cwhile : align -> seq instr_t -> pexpr -> seq instr_t -> instr_r_t 
 | Ccall  : inline_info -> lvals -> funname -> pexprs -> instr_r_t
 
-with instr_t (op:Type) := MkI : instr_info -> instr_r_t -> instr_t.
+with instr_t (asm_op:Type) := MkI : instr_info -> instr_r_t -> instr_t.
 
-Definition instr_r {op:Type} {asmop : asmOp op} := @instr_r_t op.
-Definition instr   {op:Type} {asmop : asmOp op} := @instr_t op.
+Definition instr_r `{asmop : asmOp} := @instr_r_t asm_op.
+Definition instr   `{asmop : asmOp} := @instr_t asm_op.
 Notation cmd := (seq instr).
 
 Section ASM_OP.
 
-Context {asm_op:Type} {asmop:asmOp asm_op}.
+Context `{asmop:asmOp}.
 
+(*
 Definition sopn_beq (o1 o2: sopn_t asm_op) := 
   match o1, o2 with
   | Onop, Onop                   => true
@@ -748,7 +752,7 @@ Definition sopn_beq (o1 o2: sopn_t asm_op) :=
   | Oset0 ws1, Oset0 ws2         => ws1 == ws2
   | Oconcat128, Oconcat128       => true
   | Ox86MOVZX32, Ox86MOVZX32     => true
-  | Oasm o1, Oasm o2             => beq o1 o2
+  | Oasm o1, Oasm o2             => o1 == o2 ::>
   | _, _                         => false
   end.
 
@@ -756,7 +760,6 @@ Lemma sopn_eq_axiom : Equality.axiom sopn_beq.
 Proof.
   move=> [|ws1|ws1|ws1|ws1|||o1] [|ws2|ws2|ws2|ws2|||o2] /=; 
    try by (constructor || apply: reflect_inj eqP => ?? []).
-  by case: ceqP => [-> | h]; constructor => // -[] /h.
 Qed.
 
 Definition sopn_eqMixin     := Equality.Mixin sopn_eq_axiom.
@@ -841,6 +844,8 @@ Definition get_instr o :=
   | Ox86MOVZX32  => Ox86MOVZX32_instr
   | Oasm       o => asm_op_instr o
   end.
+*)
+Definition get_instr o := asm_op_instr o.
 
 Definition string_of_sopn o : string := str (get_instr o) tt.
 
@@ -860,7 +865,7 @@ Fixpoint instr_r_beq i1 i2 :=
   | Cassgn x1 tag1 ty1 e1, Cassgn x2 tag2 ty2 e2 =>
      (tag1 == tag2) && (ty1 == ty2) && (x1 == x2) && (e1 == e2)
   | Copn x1 tag1 o1 e1, Copn x2 tag2 o2 e2 =>
-     (x1 == x2) && (tag1 == tag2) && (o1 == o2) && (e1 == e2)
+     (x1 == x2) && (tag1 == tag2) && (o1 == o2 ::>) && (e1 == e2)
   | Cif e1 c11 c12, Cif e2 c21 c22 =>
     (e1 == e2) && all2 instr_beq c11 c21 && all2 instr_beq c12 c22
   | Cfor i1 (dir1,lo1,hi1) c1, Cfor i2 (dir2,lo2,hi2) c2 =>

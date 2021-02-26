@@ -81,7 +81,7 @@ Variant asm_error :=
 
 Section Section.
 
-Context {asm_op:Type} {asmop:asmOp asm_op}.
+Context `{asmop:asmOp}.
 
 Inductive error_msg :=
   | Cerr_varalloc : var_i -> var_i -> string -> error_msg
@@ -92,7 +92,7 @@ Inductive error_msg :=
   | Cerr_neqop1   : sop1 -> sop1 -> string -> error_msg
   | Cerr_neqop2   : sop2 -> sop2 -> string -> error_msg
   | Cerr_neqopN   : opN -> opN -> string -> error_msg
-  | Cerr_neqop    : sopn -> sopn -> string -> error_msg
+  | Cerr_neqop    : asm_op -> asm_op -> string -> error_msg
   | Cerr_neqdir   : string -> error_msg
   | Cerr_neqexpr  : pexpr -> pexpr -> string -> error_msg
   | Cerr_neqlval  : lval -> lval -> string -> error_msg

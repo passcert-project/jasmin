@@ -92,9 +92,6 @@ Qed.
 Lemma inj_of_var v1 v2 r : of_var v1 = Some r -> of_var v2 = Some r -> v1 = v2.
 Proof. by move=> /of_varI <- /of_varI <-. Qed.
 
-Definition invalid_name (s: string) : asm_error :=
-  AsmErr_string ("Invalid " ++ category ++ " name: " ++ s) None.
-
 (*
 Definition of_var_e ii (v: var) :=
   match of_var v with
@@ -126,12 +123,10 @@ Class asm_extra (reg xreg rflag cond asm_op : Type) :=
   { _asm   :> asm reg xreg rflag cond asm_op
   ; _extra :> asm_extra_op }.
 
-Section AsmOp.
 
-Context {reg xreg rflag cond asm_op : Type}
-        {ad:arch_decl reg xreg cond asm_op} 
-        {aod:asm_op_decl (arch:=ad) asm_op}
-        {aeo:asm_extra_op}.
+Section AsmOpI.
+
+Context `{asm_e : asm_extra}.
 
 Definition expr_implicite_arg (i: implicite_arg) := 
   match i with 
@@ -162,5 +157,5 @@ Global Instance asm_opI : expr.asmOp asm_op :=
    ; expr.asm_op_instr := get_instr
    ; expr.set0_instr := set0_instr |}.
 
-End AsmOp.
+End AsmOpI.
 

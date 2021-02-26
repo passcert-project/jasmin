@@ -1,5 +1,5 @@
 From mathcomp Require Import all_ssreflect all_algebra.
-Require Export arch_expr compiler_util lea.
+Require Export arch_to_expr compiler_util lea.
 Import Utf8 String.
 Import all_ssreflect.
 Import xseq expr. 
@@ -10,12 +10,11 @@ Unset Printing Implicit Defensive.
 
 Section ASMEXPR.
 
-Context {asm_op : Type} {asme: asm_extra asm_op}.
+Context `{asm_e : asm_extra}.
 
+Section ToString.
 
-Section Section.
-
-Context (rtype:stype) {T:finType} {tS : ToString rtype T}.
+Context `{tS : ToString}.
 
 Definition invalid_name (s: string) : asm_error :=
   AsmErr_string ("Invalid " ++ category ++ " name: " ++ s) None.
@@ -35,13 +34,13 @@ Lemma of_var_eP ii v r :
 Proof. by rewrite /of_var_e; case: of_var => // ? [<-]. Qed.
 
 Lemma of_var_eI ii v r : of_var_e ii v = ok r -> to_var r = v.
-Proof. by move => /of_var_eP /of_varI. Qed.
+Proof. by move => /of_var_eP; apply/of_varI. Qed.
 
 Lemma inj_of_var_e ii v1 v2 r:
   of_var_e ii v1 = ok r -> of_var_e ii v2 = ok r -> v1 = v2.
 Proof. by move => /of_var_eP h1 /of_var_eP; apply: inj_of_var. Qed.
 
-End Section.
+End ToString.
 
 Definition to_reg   v : option reg_t   := of_var v.
 Definition to_xreg  v : option xreg_t  := of_var v.
@@ -56,9 +55,9 @@ Variant compiled_variable :=
 
 Definition compiled_variable_beq cv1 cv2 := 
   match cv1, cv2 with
-  | LReg   r1, LReg   r2 => r1 == r2
-  | LXReg  r1, LXReg  r2 => r1 == r2
-  | LRFlag r1, LRFlag r2 => r1 == r2
+  | LReg   r1, LReg   r2 => r1 == r2 ::>
+  | LXReg  r1, LXReg  r2 => r1 == r2 ::>
+  | LRFlag r1, LRFlag r2 => r1 == r2 ::>
   | _, _ => false
   end.
 
@@ -82,19 +81,6 @@ Definition compile_var (v: var) : option compiled_variable :=
   | Some f => Some (LRFlag f)
   | None => None
   end end end.
-
-(*
-Lemma xmm_register_of_var_compile_var x r :
-  to_reg v xmm_register_of_var x = Some r →
-  compile_var x = Some (LXReg r).
-Proof.
-  move => h; rewrite /compile_var h.
-  case: (register_of_var x) (@var_of_register_of_var x) => //.
-  move => r' /(_ _ erefl) ?; subst x.
-  have {h} := xmm_register_of_varI h.
-  by destruct r, r'.
-Qed.
-*)
 
 Lemma compile_varI x cv :
   compile_var x = Some cv →
@@ -200,7 +186,9 @@ Definition assemble_cond ii (e: pexpr) : ciexec condt :=
   end.
 
 *)
+
 Context (assemble_cond : instr_info -> pexpr -> ciexec cond_t).
+
 (* -------------------------------------------------------------------- *)
 
 (* -------------------------------------------------------------------- *)
@@ -294,4 +282,3 @@ Definition arg_of_pexpr rip ii (ty:stype) max_imm (e:pexpr) :=
   end.
 
 End ASMEXPR.
-

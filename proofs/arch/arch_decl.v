@@ -68,6 +68,7 @@ Class arch_decl (reg xreg rflag cond : Type) :=
   ; toS_f     :> ToString sbool rflag
 }.
 
+(* FIXME ARM : Try to not use this projection *)
 Definition reg_t   `{arch : arch_decl} := reg.
 Definition xreg_t  `{arch : arch_decl} := xreg.
 Definition rflag_t `{arch : arch_decl} := rflag.
