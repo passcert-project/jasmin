@@ -23,8 +23,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * ----------------------------------------------------------------------- *)
 
-
-(* -------------------------------------------------------------------- *)
 From mathcomp Require Import all_ssreflect all_algebra.
 From CoqWord Require Import ssrZ.
 Require oseq.
@@ -41,48 +39,47 @@ sem_type
 arch_decl
 values.
 
-(* Import Memory. *)
-
 Set   Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
-Module RegMap. Section Section.
-  Context {arch : arch_decl}.
+(* -------------------------------------------------------------------- *)
 
-  Definition map := {ffun reg_t -> wreg}.
+Module RegMap. Section Section.
+
+  Context `{arch : arch_decl }.
+
+  Definition map := (* {ffun reg_t -> wreg}. *)
+    FinMap.map (T:= reg_t) wreg.
 
   Definition set (m : map) (x : reg_t) (y : wreg) : map :=
-    [ffun z => if (z == x) then y else m z].
+    FinMap.set m x y.
 
 End Section. End RegMap.
 
 (* -------------------------------------------------------------------- *)
 
 Module XRegMap. Section Section.
-  Context {arch : arch_decl}.
+  Context `{arch : arch_decl}.
 
-  Definition map := {ffun xreg_t -> wxreg }.
+  Definition map := (* {ffun xreg_t -> wxreg }. *)
+    FinMap.map (T:= xreg_t) wxreg.
 
   Definition set (m : map) (x : xreg_t) (y : wxreg) : map :=
-    [ffun z => if (z == x) then y else m z].
+    FinMap.set m x y.
+
 End Section. End XRegMap.
 
 (* -------------------------------------------------------------------- *)
 
 Module RflagMap. Section Section.
-  Context {arch : arch_decl}.
+  Context `{arch : arch_decl}.
 
-  Definition map := {ffun rflag_t -> rflagv}.
+  Definition map := (* {ffun rflag_t -> rflagv}. *)
+    FinMap.map (T:= rflag_t) rflagv.
 
-  Definition set (m : map) (x : rflag_t) (y : bool) : map :=
-    [ffun z => if (z == x) then Def y else m z].
-
-  Definition oset (m : map) (x : rflag_t) (y : rflagv) : map :=
-    [ffun z => if (z == x) then y else m z].
-
-  Definition update (m : map) (f : rflag_t -> option rflagv) : map :=
-    [ffun rf => odflt (m rf) (f rf)].
+  Definition set (m : map) (x : rflag_t) (y : rflagv) : map :=
+    FinMap.set m x y.
 
 End Section. End RflagMap.
 
@@ -94,7 +91,7 @@ Notation rflagmap := RflagMap.map.
 (* -------------------------------------------------------------------- *)
 Section SEM.
 
-Context {asm_d : asm}.
+Context `{asm_d : asm}.
 
 Record asmmem : Type := AsmMem {
   asm_rip  : pointer;
@@ -185,10 +182,10 @@ Definition decode_addr (s:asmmem) (a:address) : pointer :=
 (* -------------------------------------------------------------------- *)
 Definition check_oreg or ai :=
   match or, ai with
-  | Some r, Reg r' => r == r'
+  | Some r, Reg r'  => r == r' ::>
   | Some _, Imm _ _ => true
-  | Some _, _      => false
-  | None, _        => true
+  | Some _, _       => false
+  | None, _         => true
   end.
 
 Definition eval_asm_arg k (s: asmmem) (a: asm_arg) (ty: stype) : exec value :=
@@ -249,7 +246,7 @@ Definition mem_write_rflag (s : asmmem) (f:rflag_t) (b:option bool) :=
      asm_reg  := s.(asm_reg);
      asm_rip  := s.(asm_rip); 
      asm_xreg := s.(asm_xreg);
-     asm_flag := RflagMap.oset s.(asm_flag) f (o2rflagv b);
+     asm_flag := RflagMap.set s.(asm_flag) f (o2rflagv b);
    |}.
 
 (* -------------------------------------------------------------------- *)
@@ -448,6 +445,7 @@ Definition asmsem_trans P s2 s1 s3 :
   rt_trans _ _ s1 s2 s3.
 
 End SEM.
+
 
 
 

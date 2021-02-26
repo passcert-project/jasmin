@@ -1,74 +1,28 @@
 From mathcomp Require Import all_ssreflect all_algebra.
-Require Import arch_decl compiler_util lea.
+Require Export arch_expr compiler_util lea.
 Import Utf8 String.
 Import all_ssreflect.
-Import xseq expr.
+Import xseq expr. 
 
 Set Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
+Section ASMEXPR.
+
+Context {asm_op : Type} {asme: asm_extra asm_op}.
+
+
 Section Section.
 
 Context (rtype:stype) {T:finType} {tS : ToString rtype T}.
-
-Definition of_string (s : string) :=
-  assoc strings s.
-
-(* -------------------------------------------------------------------- *)
-Lemma to_stringK : pcancel to_string of_string.
-Proof.
-move=> r; rewrite /of_string stringsE; apply /assocP.
-+ by rewrite -map_comp map_inj_uniq ?enum_uniq //; apply inj_to_string.
-by apply: map_f; rewrite mem_enum.
-Qed.
-
-(* -------------------------------------------------------------------- *)
-
-Lemma of_stringI s r : of_string s = Some r -> to_string r = s.
-Proof. 
-  have /assoc_inj := to_stringK r; apply. 
-  by rewrite stringsE -map_comp map_inj_uniq ?enum_uniq.
-Qed.
-
-Lemma inj_of_string s1 s2 r :
-     of_string s1 = Some r
-  -> of_string s2 = Some r
-  -> s1 = s2.
-Proof. by move=> /of_stringI <- /of_stringI <-. Qed.
-
-(* -------------------------------------------------------------------- *)
-Definition to_var r := 
-  {| vtype := rtype; vname := to_string r |}.
- 
-Definition of_var (v:var) := 
-  if v.(vtype) == rtype then of_string v.(vname)
-  else None.
-
-Lemma of_varP v r : of_var v = Some r <-> v.(vtype) = rtype /\ of_string v.(vname) = Some r.
-Proof. by rewrite /of_var; split=> [ | []/eqP -> ?]; first case: eqP. Qed.
-
-Lemma to_varK : pcancel to_var of_var.
-Proof. by move=> ?; rewrite /to_var /of_var /= eq_refl to_stringK. Qed.
-
-Lemma inj_to_var : injective to_var.
-Proof. apply: pcan_inj to_varK. Qed.
-
-Lemma of_varI v r : of_var v = Some r -> to_var r = v.
-Proof.
-  rewrite /of_var /= /to_var; case: eqP => // heq /of_stringI.
-  by case: v heq => /= ?? -> <-.
-Qed.
-
-Lemma inj_of_var v1 v2 r : of_var v1 = Some r -> of_var v2 = Some r -> v1 = v2.
-Proof. by move=> /of_varI <- /of_varI <-. Qed.
 
 Definition invalid_name (s: string) : asm_error :=
   AsmErr_string ("Invalid " ++ category ++ " name: " ++ s) None.
 
 Definition of_var_e ii (v: var) :=
   match of_var v with
-  | Some r => ciok r
+  | Some r => ok r
   | None => 
     let s := 
       if vtype v == rtype then ("Invalid type variable for " ++ category)%string
@@ -88,10 +42,6 @@ Lemma inj_of_var_e ii v1 v2 r:
 Proof. by move => /of_var_eP h1 /of_var_eP; apply: inj_of_var. Qed.
 
 End Section.
-
-Section Section.
-
-Context {reg xreg rflag:finType} {condt: eqType} {arch : arch_decl reg xreg rflag condt}.
 
 Definition to_reg   v : option reg_t   := of_var v.
 Definition to_xreg  v : option xreg_t  := of_var v.
@@ -343,4 +293,5 @@ Definition arg_of_pexpr rip ii (ty:stype) max_imm (e:pexpr) :=
   | sarr _ => cierror ii (Cerr_assembler (AsmErr_string "sarr ???" (Some e)))
   end.
 
-End Section.
+End ASMEXPR.
+

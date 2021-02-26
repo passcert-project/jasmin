@@ -27,19 +27,7 @@
 (* -------------------------------------------------------------------- *)
 From mathcomp Require Import all_ssreflect all_algebra.
 From CoqWord Require Import ssrZ.
-Require oseq.
-Require Import ZArith
-utils
-strings wsize
-memory_model
-(* word *)
-global
-oseq
-Utf8
-Relation_Operators
-sem_type.
-
-(* Import Memory. *)
+Require Export utils strings wsize memory_model global Utf8 Relation_Operators sem_type.
 
 Set   Implicit Arguments.
 Unset Strict Implicit.
@@ -59,31 +47,35 @@ Axiom decode_encode_label : ∀ dom lbl, obind (decode_label dom) (encode_label 
 Axiom encode_label_dom : ∀ dom lbl, lbl \in dom → encode_label dom lbl ≠ None.
 
 (* ==================================================================== *)
-
-Class ToString (t:stype) (T:finType) := 
-  { category      : string               (* name of the "register" used to print error *) 
+Class ToString (t:stype) (T:Type) := 
+  { category      : string          (* name of the "register" used to print error *) 
+  ; _finC         :> finTypeC T
   ; to_string     : T -> string
   ; strings       : list (string * T)
   ; inj_to_string : injective to_string
-  ; stringsE      : strings = [seq (to_string x, x) | x <- enum T]
+  ; stringsE      : strings = [seq (to_string x, x) | x <- enum cfinT_finType]
   }.
+
+Definition rtype `{ToString} := t.
 
 (* ==================================================================== *)
 
-Class arch_decl := 
-  { reg_t     : finType
-  ; xreg_t    : finType
-  ; rflag_t   : finType
-  ; cond_t    : eqType
-  ; xreg_size : wsize
-  ; toS_r     :> ToString (sword Uptr) reg_t
-  ; toS_x     :> ToString (sword xreg_size) xreg_t
-  ; toS_f     :> ToString sbool rflag_t
+Class arch_decl (reg xreg rflag cond : Type) := 
+  { xreg_size : wsize
+  ; cond_eqC  :> eqTypeC cond
+  ; toS_r     :> ToString (sword Uptr) reg
+  ; toS_x     :> ToString (sword xreg_size) xreg
+  ; toS_f     :> ToString sbool rflag
 }.
+
+Definition reg_t   `{arch : arch_decl} := reg.
+Definition xreg_t  `{arch : arch_decl} := xreg.
+Definition rflag_t `{arch : arch_decl} := rflag.
+Definition cond_t  `{arch : arch_decl} := cond.
 
 Section DECL.
   
-Context {arch : arch_decl}.
+Context `{arch : arch_decl}.
 
 (* -------------------------------------------------------------------- *)
 (* disp + base + scale × offset *)
@@ -100,17 +92,20 @@ Inductive address :=
    
 (* -------------------------------------------------------------------- *)
 
+Definition oeq_reg (x y:option reg_t) := 
+  @eq_op (option_eqType ceqT_eqType) x y.
+
 Definition reg_address_beq (addr1: reg_address) addr2 :=
   match addr1, addr2 with
   | mkAddress d1 b1 s1 o1, mkAddress d2 b2 s2 o2 =>
-    [&& d1 == d2, b1 == b2, s1 == s2 & o1 == o2]
+    [&& d1 == d2, oeq_reg b1 b2, s1 == s2 & oeq_reg o1 o2]
   end.
 
 Lemma reg_address_eq_axiom : Equality.axiom reg_address_beq.
 Proof.
 case=> [d1 b1 s1 o1] [d2 b2 s2 o2]; apply: (iffP idP) => /=.
 + by case/and4P ; do 4! move/eqP=> ->.
-by case; do 4! move=> ->; rewrite !eqxx.
+by case; do 4! move=> ->; rewrite /oeq_reg !eqxx.
 Qed.
 
 Definition reg_address_eqMixin := Equality.Mixin reg_address_eq_axiom.
@@ -147,11 +142,11 @@ Definition asm_args := (seq asm_arg).
 
 Definition asm_arg_beq (a1 a2:asm_arg) :=
   match a1, a2 with
-  | Condt t1, Condt t2 => t1 == t2
+  | Condt t1, Condt t2 => t1 == t2 ::>
   | Imm sz1 w1, Imm sz2 w2 => (sz1 == sz2) && (wunsigned w1 == wunsigned w2)
-  | Reg r1, Reg r2    => r1 == r2
-  | Adr a1, Adr a2    => a1 == a2
-  | XReg r1, XReg r2  => r1 == r2
+  | Reg r1, Reg r2     => r1 == r2 ::>
+  | Adr a1, Adr a2     => a1 == a2
+  | XReg r1, XReg r2   => r1 == r2 ::>
   | _, _ => false
   end.
 
@@ -161,7 +156,7 @@ Definition Imm_inj sz sz' w w' (e: @Imm sz w = @Imm sz' w') :
 
 Lemma asm_arg_eq_axiom : Equality.axiom asm_arg_beq.
 Proof.
-  case => [t1 | sz1 w1 | r1 | a1 | xr1] [t2 | sz2 w2 | r2 | a2 | xr2] =>  /=;
+  case => [t1 | sz1 w1 | r1 | a1 | xr1] [t2 | sz2 w2 | r2 | a2 | xr2] /=;
     try by (constructor || apply: reflect_inj eqP => ?? []).
   apply: (iffP idP) => //=.
   + by move=> /andP [] /eqP ? /eqP; subst => /wunsigned_inj ->.
@@ -191,9 +186,8 @@ Canonical msb_flag_eqType := EqType msb_flag msb_flag_eqMixin.
 (* -------------------------------------------------------------------- *)
 
 Variant implicite_arg : Type :=
-  | IArflag of rflag_t     (* the string corresponding to the flag *)
-  | IAreg   of reg_t  (* the string corresponding to the flag *)
-  .
+  | IArflag of rflag_t     
+  | IAreg   of reg_t.      
 
 Variant adr_kind : Type := 
   | Compute  (* Compute the address *)
@@ -259,37 +253,38 @@ Variant prim_constructor (asm_op:Type) :=
   | PrimVV of (velem → wsize → velem → wsize → asm_op)
   .
 
-Class asm_op_decl := {
-   asm_op      : Type;
-   instr_desc  : asm_op -> instr_desc_t;
-   prim_string : list (string * prim_constructor asm_op);
-}.
+Class asm_op_decl (asm_op : Type) := 
+  { _eqT        :> eqTypeC asm_op
+  ; instr_desc  : asm_op -> instr_desc_t
+  ; prim_string : list (string * prim_constructor asm_op) }.
 
-Context { asm_op_d : asm_op_decl}.
+
+Definition asm_op_t `{asm_op_d : asm_op_decl} := asm_op.
+
+Context `{asm_op_d : asm_op_decl}.
 
 Variant asm_i : Type :=
-| ALIGN
-| LABEL of label
-| STORELABEL of reg_t & label (* Store the address of a local label *)
-  (* Jumps *)
-| JMP    of remote_label (* Direct jump *)
-| JMPI   of asm_arg (* Indirect jump *)
-| Jcc    of label & cond_t  (* Conditional jump *)
-| AsmOp  of asm_op & asm_args.
+  | ALIGN
+  | LABEL of label
+  | STORELABEL of reg_t & label (* Store the address of a local label *)
+    (* Jumps *)
+  | JMP    of remote_label (* Direct jump *)
+  | JMPI   of asm_arg (* Indirect jump *)
+  | Jcc    of label & cond_t  (* Conditional jump *)
+  | AsmOp  of asm_op_t & asm_args.
 
 Definition asm_code := seq asm_i.
 
-Record asm_fundef := XFundef {
- asm_fd_align : wsize;
- asm_fd_arg  : asm_args;   (* FIXME did we really want this *)
- asm_fd_body : asm_code;
- asm_fd_res  : asm_args;   (* FIXME did we really want this *)
- asm_fd_export: bool;
-}.
+Record asm_fundef := XFundef 
+  { asm_fd_align : wsize
+  ; asm_fd_arg   : asm_args   (* FIXME did we really want this *)
+  ; asm_fd_body  : asm_code
+  ; asm_fd_res   : asm_args   (* FIXME did we really want this *)
+  ; asm_fd_export: bool  }.
 
 Record asm_prog : Type :=
-  { asm_globs : seq u8;
-    asm_funcs : seq (funname * asm_fundef) }.
+  { asm_globs : seq u8
+  ; asm_funcs : seq (funname * asm_fundef) }.
 
 End DECL.
 
@@ -306,9 +301,10 @@ Qed.
 Definition rflagv_eqMixin := Equality.Mixin rflagv_eq_axiom.
 Canonical rflagv_eqType := EqType _ rflagv_eqMixin.
 
-Class asm := 
- { _arch_decl   :> arch_decl 
- ; _asm_op_decl :> asm_op_decl
- ; _eval_cond   : (rflag_t -> result error bool) -> cond_t -> result error bool
- }.
+Class asm (reg xreg rflag cond asm_op: Type) := 
+  { _arch_decl   :> arch_decl reg xreg rflag cond
+  ; _asm_op_decl :> asm_op_decl asm_op
+  ; _eval_cond   : (rflag_t -> result error bool) -> cond_t -> result error bool
+  }.
+
 
