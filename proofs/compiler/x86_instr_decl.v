@@ -159,6 +159,14 @@ Variant asm_op : Type :=
 | VAESIMC
 | AESKEYGENASSIST
 | VAESKEYGENASSIST 
+(* MISC instructions *)
+| RDRAND
+(*
+| CPUID
+| RDSEED
+| RDTSC
+| RDTSCP
+*)
 .
 
 (* ----------------------------------------------------------------------------- *)
@@ -826,6 +834,18 @@ Definition x86_AESENCLAST      (v1 v2 : u128) : ex_tpl (w_ty U128) := ok (wrepr 
 Definition x86_AESIMC          (v1    : u128) : ex_tpl (w_ty U128) := ok (wrepr U128 0).
 Definition x86_AESKEYGENASSIST (v1 : u128) (v2 : u8) : ex_tpl (w_ty U128) := ok (wrepr U128 0).
 
+(* ---------------------------------------------------------------- *)
+
+(*
+Definition x86_CPUID           : ex_tpl (w_ty U64) := ok (wrepr U64 0).
+*)
+Definition x86_RDRAND          : ex_tpl (w_ty U64) := ok (wrepr U64 0).
+(*
+Definition x86_RDSEED          : ex_tpl (w_ty U64) := ok (wrepr U64 0).
+Definition x86_RDTSC           : ex_tpl (w_ty U64) := ok (wrepr U64 0).
+Definition x86_RDTSCP          : ex_tpl (w_ty U64) := ok (wrepr U64 0).
+*)
+
 (* ----------------------------------------------------------------------------- *)
 Coercion F f := ADImplicit (IArflag f).
 Coercion R r := ADImplicit (IAreg r).
@@ -1478,6 +1498,17 @@ Definition Ox86_VAESKEYGENASSIST_instr :=
    (check_xmm_xmmm_imm8 U128) 3 U128 (imm8 U8) (PrimM VAESKEYGENASSIST) 
    (pp_name_ty "vaeskeygenassist" [::U128;U128;U8]).
 
+(* MISC instructions *)
+
+Print mk_instr.
+Definition mk_instr_rnd jname aname constr x86_sem msb_flag :=
+  mk_instr_pp jname nil (w_ty U64) nil [:: E 0] msb_flag x86_sem
+         [:: [::r]] 1 U64 None (PrimM constr) (pp_name_ty aname [::U64]).
+
+Definition Ox86_RDRAND_instr :=
+ mk_instr_rnd "RDRAND" "rdrand" RDRAND x86_RDRAND MSB_CLEAR.
+
+
 Definition instr_desc o : instr_desc_t :=
   match o with
   | MOV sz             => Ox86_MOV_instr.1 sz
@@ -1577,6 +1608,7 @@ Definition instr_desc o : instr_desc_t :=
   | VAESIMC            => Ox86_VAESIMC_instr.1         
   | AESKEYGENASSIST    => Ox86_AESKEYGENASSIST_instr.1 
   | VAESKEYGENASSIST   => Ox86_VAESKEYGENASSIST_instr.1 
+  | RDRAND             => Ox86_RDRAND_instr.1
   end.
 
 (* -------------------------------------------------------------------- *)
@@ -1679,7 +1711,8 @@ Definition prim_string :=
    Ox86_AESIMC_instr.2;          
    Ox86_VAESIMC_instr.2;         
    Ox86_AESKEYGENASSIST_instr.2; 
-   Ox86_VAESKEYGENASSIST_instr.2  
+   Ox86_VAESKEYGENASSIST_instr.2;
+   Ox86_RDRAND_instr.2
  ].
   
   
